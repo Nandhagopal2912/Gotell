@@ -1,0 +1,12 @@
+# Architecture docs are kept out of the repo
+docs/
+
+# Go build and test output
+*.exe
+*.test
+*.out
+
+# Editor and OS files
+.vscode/
+.idea/
+Thumbs.db
