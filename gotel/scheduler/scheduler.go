@@ -85,19 +85,25 @@ func (s *Scheduler) Resume(targetID int) {
 	s.commands <- command{targetID: targetID, pause: false}
 }
 
-// Results returns completed probes, forwarded from the pool.
+// Results returns completed probes, forwarded from the pool. Callers must
+// keep reading it until it is closed; Run closes it after shutting down.
 func (s *Scheduler) Results() <-chan worker.JobResult {
 	return s.results
 }
 
-// Run is the scheduler loop. It returns when ctx is cancelled.
+// Run is the scheduler loop. When ctx is cancelled it shuts down in the
+// order of blueprint §15: stop scheduling, cancel running probes, forward
+// the last results, then close Results.
 func (s *Scheduler) Run(ctx context.Context) {
+	defer close(s.results)
+
 	ticker := time.NewTicker(s.tick)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
+			s.drain()
 			return
 
 		case now := <-ticker.C:
@@ -112,17 +118,27 @@ func (s *Scheduler) Run(ctx context.Context) {
 			}
 
 		case jr := <-s.pool.Results():
-			// The target's probe has finished; it may be scheduled again.
-			if e, ok := s.entries[jr.Job.TargetID]; ok {
-				e.inFlight = false
-			}
-			select {
-			case s.results <- jr:
-			case <-ctx.Done():
-				return
-			}
+			s.finish(jr)
 		}
 	}
+}
+
+// drain stops the pool and forwards every result it still produces.
+// pool.Shutdown closes pool.Results when the workers have exited, which
+// ends the range loop.
+func (s *Scheduler) drain() {
+	go s.pool.Shutdown()
+	for jr := range s.pool.Results() {
+		s.finish(jr)
+	}
+}
+
+// finish marks a target's probe as done and forwards its result.
+func (s *Scheduler) finish(jr worker.JobResult) {
+	if e, ok := s.entries[jr.Job.TargetID]; ok {
+		e.inFlight = false // it may be scheduled again
+	}
+	s.results <- jr
 }
 
 // dispatchDue submits every target whose next run is due, that is not

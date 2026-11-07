@@ -22,8 +22,8 @@ type Job struct {
 	URL      string
 	Timeout  time.Duration // overall deadline for this probe
 
-	// ScheduleAt is when the schedule wanted this probe to start
-	// Zero means "not scheduled" (e.g. submitted directly)
+	// ScheduledAt is when the scheduler wanted this probe to start.
+	// Zero means "not scheduled" (e.g. submitted directly).
 	ScheduledAt time.Time
 }
 
@@ -32,8 +32,9 @@ type JobResult struct {
 	Job    Job
 	Result probe.Result
 
-	StartedAt time.Time //when a worker actually started the probe
-	//SchedulerDelay is StartedAt - Job.ScheduledAt
+	StartedAt time.Time // when a worker actually started the probe
+	// SchedulerDelay is StartedAt - Job.ScheduledAt (blueprint §4.1:
+	// scheduler lag). Zero if the job had no ScheduledAt.
 	SchedulerDelay time.Duration
 }
 
@@ -43,15 +44,23 @@ type Pool struct {
 	jobs    chan Job
 	results chan JobResult
 	wg      sync.WaitGroup
+
+	// ctx is the parent of every probe's context. Cancelling it (Shutdown)
+	// stops in-flight probes and makes workers skip queued jobs.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewPool creates a pool with the given number of workers and a job queue
 // that holds at most queueSize waiting jobs.
 func NewPool(p Prober, workers, queueSize int) *Pool {
+	ctx, cancel := context.WithCancel(context.Background())
 	pl := &Pool{
 		prober:  p,
 		jobs:    make(chan Job, queueSize),
 		results: make(chan JobResult, queueSize),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 
 	for i := 0; i < workers; i++ {
@@ -66,12 +75,18 @@ func NewPool(p Prober, workers, queueSize int) *Pool {
 func (pl *Pool) work() {
 	defer pl.wg.Done()
 	for job := range pl.jobs {
+		if pl.ctx.Err() != nil {
+			// Shutting down: a queued job that never started is skipped,
+			// not run with an already-cancelled context.
+			continue
+		}
+
 		jr := JobResult{Job: job, StartedAt: time.Now()}
 		if !job.ScheduledAt.IsZero() {
 			jr.SchedulerDelay = jr.StartedAt.Sub(job.ScheduledAt)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), job.Timeout)
+		ctx, cancel := context.WithTimeout(pl.ctx, job.Timeout)
 		jr.Result = pl.prober.Probe(ctx, job.URL)
 		cancel()
 
@@ -101,8 +116,22 @@ func (pl *Pool) Results() <-chan JobResult {
 }
 
 // Stop stops accepting jobs, waits for queued and running jobs to finish,
-// then closes the results channel.
+// then closes the results channel. Someone must keep reading Results
+// until it is closed. Call Stop or Shutdown once, not both.
 func (pl *Pool) Stop() {
+	close(pl.jobs)
+	pl.wg.Wait()
+	pl.cancel() // release the context's resources
+	close(pl.results)
+}
+
+// Shutdown is the fast stop (blueprint §15): it cancels probes that are
+// running, skips jobs still in the queue, waits for the workers to exit,
+// then closes the results channel. Cancelled probes still send a result,
+// with an error that wraps context.Canceled. Someone must keep reading
+// Results until it is closed. Call Stop or Shutdown once, not both.
+func (pl *Pool) Shutdown() {
+	pl.cancel()
 	close(pl.jobs)
 	pl.wg.Wait()
 	close(pl.results)

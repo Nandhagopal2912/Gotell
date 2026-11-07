@@ -22,16 +22,11 @@ func collect(s *Scheduler, d time.Duration) int {
 	}
 }
 
-// stopAll cancels the scheduler, waits for Run to return, then drains
-// and stops the pool.
-func stopAll(cancel context.CancelFunc, stopped <-chan struct{}, pool *worker.Pool) {
+// stopAll cancels the scheduler and reads Results until Run closes it.
+func stopAll(cancel context.CancelFunc, s *Scheduler) {
 	cancel()
-	<-stopped
-	go func() {
-		for range pool.Results() {
-		}
-	}()
-	pool.Stop()
+	for range s.Results() {
+	}
 }
 
 func TestSchedulerPauseAndResume(t *testing.T) {
@@ -43,12 +38,8 @@ func TestSchedulerPauseAndResume(t *testing.T) {
 	s := New(pool, 5*time.Millisecond, 0, targets)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		s.Run(ctx)
-		close(stopped)
-	}()
-	defer stopAll(cancel, stopped, pool)
+	go s.Run(ctx)
+	defer stopAll(cancel, s)
 
 	if n := collect(s, 100*time.Millisecond); n == 0 {
 		t.Fatal("before pause: got no results, want some")
@@ -79,12 +70,8 @@ func TestSchedulerMeasuresLag(t *testing.T) {
 	s := New(pool, 5*time.Millisecond, 0, targets)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		s.Run(ctx)
-		close(stopped)
-	}()
-	defer stopAll(cancel, stopped, pool)
+	go s.Run(ctx)
+	defer stopAll(cancel, s)
 
 	var maxLag time.Duration
 	deadline := time.After(300 * time.Millisecond)

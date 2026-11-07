@@ -47,34 +47,20 @@ func (c *countingProber) Probe(ctx context.Context, url string) probe.Result {
 	return probe.Result{URL: url, StatusCode: 200}
 }
 
-// runFor runs the scheduler for d, collecting results, then shuts
-// everything down cleanly and returns how many results arrived per target.
-func runFor(t *testing.T, s *Scheduler, pool *worker.Pool, d time.Duration) map[int]int {
+// runFor runs the scheduler for d and returns how many results arrived
+// per target. Run shuts the pool down and closes Results by itself.
+func runFor(t *testing.T, s *Scheduler, d time.Duration) map[int]int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
 
-	stopped := make(chan struct{})
-	go func() {
-		s.Run(ctx)
-		close(stopped)
-	}()
+	go s.Run(ctx)
 
 	got := make(map[int]int)
-	for {
-		select {
-		case jr := <-s.Results():
-			got[jr.Job.TargetID]++
-		case <-stopped:
-			// Drain the pool so its workers can finish, then stop it.
-			go func() {
-				for range pool.Results() {
-				}
-			}()
-			pool.Stop()
-			return got
-		}
+	for jr := range s.Results() {
+		got[jr.Job.TargetID]++
 	}
+	return got
 }
 
 func TestSchedulerProbesEachTargetRepeatedly(t *testing.T) {
@@ -86,7 +72,7 @@ func TestSchedulerProbesEachTargetRepeatedly(t *testing.T) {
 	}
 	s := New(pool, 5*time.Millisecond, 0, targets)
 
-	got := runFor(t, s, pool, 210*time.Millisecond)
+	got := runFor(t, s, 210*time.Millisecond)
 
 	// About 210/40 ≈ 5 runs each; allow slack for timer granularity.
 	for _, tg := range targets {
@@ -106,7 +92,7 @@ func TestSchedulerNeverOverlapsOneTarget(t *testing.T) {
 	}
 	s := New(pool, 5*time.Millisecond, 0, targets)
 
-	runFor(t, s, pool, 200*time.Millisecond)
+	runFor(t, s, 200*time.Millisecond)
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
