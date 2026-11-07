@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gotel/probe"
+	"gotel/runner"
 )
 
 // blockingProber never finishes on its own: each probe waits until its
@@ -67,8 +68,14 @@ func TestPoolShutdownCancelsInFlightProbes(t *testing.T) {
 		t.Fatalf("got %d results, want 2 (one per running probe)", len(got))
 	}
 	for _, jr := range got {
-		if !errors.Is(jr.Result.Err, context.Canceled) {
-			t.Errorf("target %d: Err = %v, want context.Canceled", jr.Job.TargetID, jr.Result.Err)
+		if jr.Run.Outcome != runner.OutcomeCancelled {
+			t.Errorf("target %d: Outcome = %q, want %q", jr.Job.TargetID, jr.Run.Outcome, runner.OutcomeCancelled)
+		}
+		if n := len(jr.Run.Attempts); n != 1 {
+			t.Fatalf("target %d: %d attempts, want 1 (cancelled is never retried)", jr.Job.TargetID, n)
+		}
+		if err := jr.Run.Attempts[0].Result.Err; !errors.Is(err, context.Canceled) {
+			t.Errorf("target %d: Err = %v, want context.Canceled", jr.Job.TargetID, err)
 		}
 	}
 }

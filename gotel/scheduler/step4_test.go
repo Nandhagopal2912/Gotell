@@ -80,11 +80,11 @@ func TestSchedulerMeasuresLag(t *testing.T) {
 		select {
 		case jr := <-s.Results():
 			count++
-			if jr.SchedulerDelay < 0 {
-				t.Errorf("target %d: SchedulerDelay = %v, want >= 0", jr.Job.TargetID, jr.SchedulerDelay)
+			if lag := jr.Run.SchedulerDelay; lag < 0 {
+				t.Errorf("target %d: SchedulerDelay = %v, want >= 0", jr.Job.TargetID, lag)
 			}
-			if jr.SchedulerDelay > maxLag {
-				maxLag = jr.SchedulerDelay
+			if jr.Run.SchedulerDelay > maxLag {
+				maxLag = jr.Run.SchedulerDelay
 			}
 		case <-deadline:
 			done = true

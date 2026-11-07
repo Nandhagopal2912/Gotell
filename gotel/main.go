@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gotel/probe"
+	"gotel/runner"
 )
 
 func main() {
@@ -16,32 +17,40 @@ func main() {
 		"https://httpbin.org/status/500",
 	}
 	p := probe.New(probe.DefaultConfig())
-	policy := probe.Default2xx
+
+	// Shorter waits than the default so the demo finishes quickly.
+	rp := runner.DefaultRetryPolicy()
+	rp.BaseDelay = 500 * time.Millisecond
 
 	failed := false
 	for _, url := range urls {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		r := p.Probe(ctx, url)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		run := runner.Do(ctx, p, url, rp, probe.Default2xx)
 		cancel()
 
-		if !policy.Healthy(r) {
+		if run.Outcome != runner.OutcomeSuccess && run.Outcome != runner.OutcomeRecovered {
 			failed = true
-			if r.Err != nil {
-				fmt.Fprintf(os.Stderr, "FAIL %s after %v: %v\n", r.URL, r.Total, r.Err)
-			} else {
-				fmt.Fprintf(os.Stderr, "FAIL %s status=%d (not allowed by policy) total=%v\n", r.URL, r.StatusCode, r.Total)
-			}
-			continue
 		}
-
-		fmt.Printf("OK   %s status=%d ttfb=%s total=%v bytes=%d\n",
-			r.URL, r.StatusCode, show(r.TTFB), r.Total, r.BodyBytes)
-		fmt.Printf("     dns=%s tcp=%s tls=%s reused=%v\n",
-			show(r.DNS), show(r.TCPConnect), show(r.TLSHandshake), r.ConnReused)
+		printRun(run)
 	}
 
 	if failed {
 		os.Exit(1)
+	}
+}
+
+// printRun shows a run's outcome and every attempt, failed ones included.
+func printRun(run runner.Run) {
+	fmt.Printf("%-9s %s  (%d attempt(s), %v)\n",
+		run.Outcome, run.URL, len(run.Attempts), run.CompletedAt.Sub(run.StartedAt).Round(time.Millisecond))
+	for _, a := range run.Attempts {
+		r := a.Result
+		fmt.Printf("  #%d %-10s status=%d ttfb=%s dns=%s tcp=%s tls=%s total=%v\n",
+			a.Number, a.Class, r.StatusCode, show(r.TTFB), show(r.DNS),
+			show(r.TCPConnect), show(r.TLSHandshake), r.Total.Round(time.Millisecond))
+		if r.Err != nil {
+			fmt.Printf("     error: %v\n", r.Err)
+		}
 	}
 }
 
@@ -50,5 +59,5 @@ func show(d *time.Duration) string {
 	if d == nil {
 		return "-"
 	}
-	return d.String()
+	return d.Round(time.Millisecond).String()
 }
