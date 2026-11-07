@@ -21,12 +21,20 @@ type Job struct {
 	TargetID int
 	URL      string
 	Timeout  time.Duration // overall deadline for this probe
+
+	// ScheduleAt is when the schedule wanted this probe to start
+	// Zero means "not scheduled" (e.g. submitted directly)
+	ScheduledAt time.Time
 }
 
 // JobResult pairs a Job with what the probe observed.
 type JobResult struct {
 	Job    Job
 	Result probe.Result
+
+	StartedAt time.Time //when a worker actually started the probe
+	//SchedulerDelay is StartedAt - Job.ScheduledAt
+	SchedulerDelay time.Duration
 }
 
 // Pool runs jobs on a fixed number of worker goroutines.
@@ -58,10 +66,16 @@ func NewPool(p Prober, workers, queueSize int) *Pool {
 func (pl *Pool) work() {
 	defer pl.wg.Done()
 	for job := range pl.jobs {
+		jr := JobResult{Job: job, StartedAt: time.Now()}
+		if !job.ScheduledAt.IsZero() {
+			jr.SchedulerDelay = jr.StartedAt.Sub(job.ScheduledAt)
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), job.Timeout)
-		r := pl.prober.Probe(ctx, job.URL)
+		jr.Result = pl.prober.Probe(ctx, job.URL)
 		cancel()
-		pl.results <- JobResult{Job: job, Result: r}
+
+		pl.results <- jr
 	}
 }
 

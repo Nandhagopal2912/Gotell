@@ -84,7 +84,7 @@ func TestSchedulerProbesEachTargetRepeatedly(t *testing.T) {
 		{ID: 1, URL: "http://a.test/", Interval: 40 * time.Millisecond, Timeout: time.Second},
 		{ID: 2, URL: "http://b.test/", Interval: 40 * time.Millisecond, Timeout: time.Second},
 	}
-	s := New(pool, 5*time.Millisecond, targets)
+	s := New(pool, 5*time.Millisecond, 0, targets)
 
 	got := runFor(t, s, pool, 210*time.Millisecond)
 
@@ -104,7 +104,7 @@ func TestSchedulerNeverOverlapsOneTarget(t *testing.T) {
 	targets := []Target{
 		{ID: 1, URL: "http://slow.test/", Interval: 10 * time.Millisecond, Timeout: time.Second},
 	}
-	s := New(pool, 5*time.Millisecond, targets)
+	s := New(pool, 5*time.Millisecond, 0, targets)
 
 	runFor(t, s, pool, 200*time.Millisecond)
 
