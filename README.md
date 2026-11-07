@@ -8,6 +8,27 @@ Gotell probes your endpoints **from the outside**, the way a user would. It reco
 
 ---
 
+## Who it's for
+
+Indie developers and small teams running apps on **free, hobby or serverless hosting** (Render, Railway, Fly.io, serverless functions and similar), where the most common question is:
+
+> *Is my app down, slow, or just waking up from a cold start?*
+
+Most uptime tools answer only "up" or "down". Gotell aims to tell you **which one**, and **where the time went**.
+
+## Why Gotell
+
+A basic URL pinger is easy to write. A monitor whose numbers you can trust is not. Gotell focuses on the details that make monitoring data honest:
+
+- **Honest uptime.** Missing measurements are never counted as success, and gaps in monitoring coverage are shown separately from the target's own availability. A "99.9%" from Gotell means 99.9% of expected checks actually succeeded.
+- **Where the time went.** Each probe is split into DNS lookup, TCP connect, TLS handshake, time to first byte and total time, so a slow response points to a stage, not just a number.
+- **Suspected cold starts.** Slow responses after idle periods are flagged as *suspected* cold starts, with the evidence kept, instead of being reported as outages or silently hidden.
+- **Every attempt kept.** "Failed once, recovered on retry" is recorded differently from "healthy the whole time", so flapping services are visible.
+- **"Not measured" is never 0 ms.** Stages that didn't happen (for example on a reused connection) are stored as missing, not as zero.
+- **Simple to self-host.** One Go binary and one SQLite file. Your monitoring data stays with you.
+
+---
+
 ## Goals
 
 - Monitor user-configured **HTTP and HTTPS** endpoints from outside the target application.
