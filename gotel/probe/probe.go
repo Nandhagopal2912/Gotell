@@ -2,10 +2,12 @@ package probe
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"time"
 )
 
@@ -18,10 +20,17 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 type Result struct {
 	URL        string
 	StatusCode int
-	Headers    time.Duration // request start -> status and headers received
 	Total      time.Duration // request start -> body read, or -> failure
 	BodyBytes  int64         // bytes read, capped at maxBodyBytes
 	Err        error         // nil if the HTTP exchange completed
+
+	// Trace timings (blueprint §5.2). nil means "not measured",
+	// never "took 0 ms".
+	DNS          *time.Duration // DNS lookup; nil for IP-literal URLs or reused connections
+	ConnReused   bool           // true if an idle pooled connection was reused
+	TCPConnect   *time.Duration // TCP connect; nil on reused connections
+	TLSHandshake *time.Duration // TLS handshake; nil for http:// or reused connections
+	TTFB         *time.Duration // request start -> first response byte; nil if no response arrived
 }
 
 // Config holds the separate per-stage timeouts (blueprint §5.1).
@@ -75,13 +84,50 @@ func New(cfg Config) *Prober {
 func (p *Prober) Probe(ctx context.Context, url string) Result {
 	r := Result{URL: url}
 
+	var dnsStart, connectStart, tlsStart, start time.Time
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			dnsStart = time.Now()
+		},
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			d := time.Since(dnsStart)
+			r.DNS = &d
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			r.ConnReused = info.Reused
+		},
+		ConnectStart: func(network, addr string) {
+			if connectStart.IsZero() {
+				connectStart = time.Now()
+			}
+		},
+		ConnectDone: func(network string, addr string, err error) {
+			if err == nil {
+				d := time.Since(connectStart)
+				r.TCPConnect = &d
+			}
+		},
+		GotFirstResponseByte: func() {
+			d := time.Since(start)
+			r.TTFB = &d
+		},
+		TLSHandshakeStart: func() {
+			tlsStart = time.Now()
+		},
+		TLSHandshakeDone: func(cs tls.ConnectionState, err error) {
+			d := time.Since(tlsStart)
+			r.TLSHandshake = &d
+		},
+	}
+	ctx = httptrace.WithClientTrace(ctx, trace)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		r.Err = fmt.Errorf("creating request: %w", err)
 		return r
 	}
 
-	start := time.Now()
+	start = time.Now()
 
 	res, err := p.client.Do(req)
 	if err != nil {
@@ -91,7 +137,6 @@ func (p *Prober) Probe(ctx context.Context, url string) Result {
 	}
 	defer res.Body.Close()
 
-	r.Headers = time.Since(start)
 	r.StatusCode = res.StatusCode
 
 	n, err := io.Copy(io.Discard, io.LimitReader(res.Body, maxBodyBytes))

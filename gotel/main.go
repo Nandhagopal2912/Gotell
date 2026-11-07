@@ -34,11 +34,21 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("OK   %s status=%d headers=%v total=%v bytes=%d\n",
-			r.URL, r.StatusCode, r.Headers, r.Total, r.BodyBytes)
+		fmt.Printf("OK   %s status=%d ttfb=%s total=%v bytes=%d\n",
+			r.URL, r.StatusCode, show(r.TTFB), r.Total, r.BodyBytes)
+		fmt.Printf("     dns=%s tcp=%s tls=%s reused=%v\n",
+			show(r.DNS), show(r.TCPConnect), show(r.TLSHandshake), r.ConnReused)
 	}
 
 	if failed {
 		os.Exit(1)
 	}
+}
+
+// show formats an optional duration: "-" when it was not measured.
+func show(d *time.Duration) string {
+	if d == nil {
+		return "-"
+	}
+	return d.String()
 }
