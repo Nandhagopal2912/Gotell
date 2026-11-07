@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"sync"
 	"time"
 )
 
@@ -84,37 +85,63 @@ func New(cfg Config) *Prober {
 func (p *Prober) Probe(ctx context.Context, url string) Result {
 	r := Result{URL: url}
 
+	// the trace hooks below can run on other goroutines, and may even run
+	// after probe has returned (e.g a handshake that outlives a cancelled request)
+	// mu guards everything they touch
+	var mu sync.Mutex
+	snapshot := func() Result {
+		mu.Lock()
+		defer mu.Unlock()
+		return r
+	}
+
 	var dnsStart, connectStart, tlsStart, start time.Time
 	trace := &httptrace.ClientTrace{
 		DNSStart: func(httptrace.DNSStartInfo) {
+			mu.Lock()
+			defer mu.Unlock()
 			dnsStart = time.Now()
 		},
 		DNSDone: func(httptrace.DNSDoneInfo) {
+			mu.Lock()
+			defer mu.Unlock()
 			d := time.Since(dnsStart)
 			r.DNS = &d
 		},
 		GotConn: func(info httptrace.GotConnInfo) {
+			mu.Lock()
+			defer mu.Unlock()
 			r.ConnReused = info.Reused
 		},
 		ConnectStart: func(network, addr string) {
+			mu.Lock()
+			defer mu.Unlock()
 			if connectStart.IsZero() {
 				connectStart = time.Now()
 			}
 		},
 		ConnectDone: func(network string, addr string, err error) {
+			mu.Lock()
+			defer mu.Unlock()
 			if err == nil {
 				d := time.Since(connectStart)
 				r.TCPConnect = &d
 			}
 		},
 		GotFirstResponseByte: func() {
+			mu.Lock()
+			defer mu.Unlock()
 			d := time.Since(start)
 			r.TTFB = &d
 		},
 		TLSHandshakeStart: func() {
+			mu.Lock()
+			defer mu.Unlock()
 			tlsStart = time.Now()
 		},
 		TLSHandshakeDone: func(cs tls.ConnectionState, err error) {
+			mu.Lock()
+			defer mu.Unlock()
 			d := time.Since(tlsStart)
 			r.TLSHandshake = &d
 		},
@@ -124,7 +151,7 @@ func (p *Prober) Probe(ctx context.Context, url string) Result {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		r.Err = fmt.Errorf("creating request: %w", err)
-		return r
+		return snapshot()
 	}
 
 	start = time.Now()
@@ -133,7 +160,7 @@ func (p *Prober) Probe(ctx context.Context, url string) Result {
 	if err != nil {
 		r.Total = time.Since(start)
 		r.Err = fmt.Errorf("sending request: %w", err)
-		return r
+		return snapshot()
 	}
 	defer res.Body.Close()
 
@@ -145,5 +172,5 @@ func (p *Prober) Probe(ctx context.Context, url string) Result {
 	if err != nil {
 		r.Err = fmt.Errorf("reading body: %w", err)
 	}
-	return r
+	return snapshot()
 }
