@@ -92,6 +92,9 @@ function explainAttempt(a) {
       return "The connection dropped while the answer was being downloaded.";
     case "cancelled":
       return "Stopped by Gotell (shutting down). Not the target's fault.";
+    case "blocked":
+      return "Gotell refused to connect: this address is private or internal (like localhost or 192.168.x.x). " +
+        "That protects your network. To monitor your own services, start Gotell with -allow-private.";
     default:
       return "An unexpected error; see the latest checks for details.";
   }

@@ -306,6 +306,7 @@ td.wrap { white-space: normal; overflow-wrap: anywhere; min-width: 220px; max-wi
 .tag.failed, .tag.timeout, .tag.dns, .tag.connect, .tag.tls, .tag.http_4xx, .tag.http_5xx,
 .tag.http_other, .tag.body_read, .tag.unknown, .tag.open { color: var(--bad); }
 .tag.cancelled { color: var(--muted); }
+.tag.blocked { color: var(--paused); }
 
 /* ---- where the time went ---- */
 

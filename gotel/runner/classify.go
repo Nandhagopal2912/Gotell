@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 
+	"gotel/netguard"
 	"gotel/probe"
 )
 
@@ -24,6 +25,10 @@ func Classify(r probe.Result, sp probe.StatusPolicy) FailureClass {
 	// Stopped by us: never the target's fault, so check it first.
 	case errors.Is(err, context.Canceled):
 		return ClassCancelled
+
+	// Gotell refused the address itself (SSRF guard): retrying cannot help.
+	case errors.Is(err, netguard.ErrBlocked):
+		return ClassBlocked
 
 	// A status line arrived, so the failure happened while reading the body.
 	case r.StatusCode != 0:
@@ -98,7 +103,7 @@ func Retryable(c FailureClass) bool {
 		ClassBodyRead: // the connection dropped mid-response
 		return true
 	default:
-		// None, 4xx, other statuses, TLS, cancelled, unknown.
+		// None, 4xx, other statuses, TLS, cancelled, blocked, unknown.
 		return false
 	}
 }

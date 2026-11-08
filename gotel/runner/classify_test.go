@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"gotel/netguard"
 	"gotel/probe"
 )
 
@@ -37,6 +38,7 @@ func TestClassifyTable(t *testing.T) {
 		{"unknown CA", probe.Result{Err: wrap(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}})}, ClassTLS},
 		{"body read", probe.Result{StatusCode: 200, Err: fmt.Errorf("reading body: %w", errors.New("unexpected EOF"))}, ClassBodyRead},
 		{"cancelled while reading body", probe.Result{StatusCode: 200, Err: fmt.Errorf("reading body: %w", context.Canceled)}, ClassCancelled},
+		{"blocked by the SSRF guard", probe.Result{Err: wrap(&net.OpError{Op: "dial", Err: fmt.Errorf("%w (127.0.0.1)", netguard.ErrBlocked)})}, ClassBlocked},
 		{"something else", probe.Result{Err: errors.New("weird")}, ClassUnknown},
 	}
 	for _, tt := range tests {
@@ -87,7 +89,9 @@ func TestClassifyRealProbes(t *testing.T) {
 		{"dns failure", "http://gotell-test.invalid/", 5 * time.Second, ClassDNS},
 		{"timeout", slow.URL, 50 * time.Millisecond, ClassTimeout},
 	}
-	p := probe.New(probe.DefaultConfig())
+	cfg := probe.DefaultConfig()
+	cfg.AllowPrivate = true // these tests use local servers
+	p := probe.New(cfg)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), tt.timeout)
@@ -115,6 +119,7 @@ func TestRetryable(t *testing.T) {
 		{ClassHTTP4xx, false},
 		{ClassHTTPOther, false},
 		{ClassCancelled, false},
+		{ClassBlocked, false},
 		{ClassUnknown, false},
 	}
 	for _, tt := range tests {

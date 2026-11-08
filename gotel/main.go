@@ -27,6 +27,7 @@ func main() {
 	dbPath := flag.String("db", "gotell.db", "SQLite database file")
 	listen := flag.String("listen", "127.0.0.1:8080", "address for the dashboard and API (localhost only by default)")
 	tokenFlag := flag.String("token", os.Getenv("GOTELL_TOKEN"), "admin token for changing targets (default: $GOTELL_TOKEN, or one generated and kept in the database)")
+	allowPrivate := flag.Bool("allow-private", false, "allow targets on private or internal addresses (localhost, 192.168.x.x, ...); off by default for safety")
 	flag.Parse()
 
 	// Open the database first: if it cannot be written, do not start probing.
@@ -60,7 +61,9 @@ func main() {
 
 	rp := runner.DefaultRetryPolicy()
 	rp.BaseDelay = 500 * time.Millisecond // short waits for the demo
-	pool := worker.NewPoolWithPolicies(probe.New(probe.DefaultConfig()), 4, 16, rp, probe.Default2xx)
+	probeCfg := probe.DefaultConfig()
+	probeCfg.AllowPrivate = *allowPrivate
+	pool := worker.NewPoolWithPolicies(probe.New(probeCfg), 4, 16, rp, probe.Default2xx)
 	sched := scheduler.New(pool, time.Second, 2*time.Second, targets)
 	tel := telemetry.New(64)
 	writer := store.NewWriter(db, store.DefaultWriterConfig())
@@ -84,7 +87,9 @@ func main() {
 		log.Fatalf("dashboard: %v", err)
 	}
 	routes := http.NewServeMux()
-	routes.Handle("/api/", api.New(db, schedulerControl{sched}, token).Handler())
+	apiServer := api.New(db, schedulerControl{sched}, token)
+	apiServer.SetAllowPrivate(*allowPrivate)
+	routes.Handle("/api/", apiServer.Handler())
 	routes.Handle("/", web.Handler())
 	srv := &http.Server{Handler: routes, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -96,6 +101,9 @@ func main() {
 	fmt.Printf("Admin token (needed to add, pause or delete targets): %s\n", token)
 	if len(targets) == 0 {
 		fmt.Println("No targets yet: open the dashboard and add one.")
+	}
+	if *allowPrivate {
+		fmt.Println("WARNING: -allow-private is on: targets may point at internal addresses. Keep the dashboard private.")
 	}
 
 	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.

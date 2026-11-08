@@ -17,7 +17,7 @@ func TestProbeDNSNotMeasuredForIPLiteral(t *testing.T) {
 	defer cancel()
 
 	// srv.URL is like http://127.0.0.1:54321, so there is no name to look up.
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err != nil {
 		t.Fatalf("unexpected error: %v", r.Err)
@@ -36,7 +36,7 @@ func TestProbeDNSMeasuredForHostname(t *testing.T) {
 
 	// Same server, but reached by name, so a DNS lookup happens.
 	url := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
-	r := New(DefaultConfig()).Probe(ctx, url)
+	r := New(testConfig()).Probe(ctx, url)
 
 	if r.Err != nil {
 		t.Fatalf("unexpected error: %v", r.Err)
@@ -55,7 +55,7 @@ func TestProbeConnectionReuse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	p := New(DefaultConfig())
+	p := New(testConfig())
 	first := p.Probe(ctx, srv.URL)
 	second := p.Probe(ctx, srv.URL)
 
@@ -77,7 +77,7 @@ func TestProbeTCPMeasuredTLSNotForHTTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err != nil {
 		t.Fatalf("unexpected error: %v", r.Err)
@@ -99,7 +99,7 @@ func TestProbeTLSMeasuredEvenWhenCertRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err == nil {
 		t.Fatal("expected a certificate error, got nil")
@@ -122,7 +122,7 @@ func TestProbeReusedConnectionSkipsSetupTimings(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	p := New(DefaultConfig())
+	p := New(testConfig())
 	p.Probe(ctx, srv.URL) // opens the connection
 	r := p.Probe(ctx, srv.URL)
 
@@ -143,7 +143,7 @@ func TestProbeTTFBMeasured(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err != nil {
 		t.Fatalf("unexpected error: %v", r.Err)
@@ -164,7 +164,7 @@ func TestProbeTTFBNotMeasuredWithoutResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, url)
+	r := New(testConfig()).Probe(ctx, url)
 
 	if r.Err == nil {
 		t.Fatal("expected an error, got nil")

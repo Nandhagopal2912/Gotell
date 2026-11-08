@@ -28,6 +28,7 @@ func TestProbeLateTraceHookIsRaceFree(t *testing.T) {
 	}()
 
 	cfg := DefaultConfig()
+	cfg.AllowPrivate = true // tests use local servers
 	cfg.TLSHandshakeTimeout = 200 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

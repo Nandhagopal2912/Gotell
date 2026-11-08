@@ -22,7 +22,7 @@ func TestProbeSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err != nil {
 		t.Fatalf("unexpected error: %v", r.Err)
@@ -45,7 +45,7 @@ func TestProbeHTTPError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	// A 500 is a completed HTTP exchange, not a Go error.
 	// Deciding that 500 is "unhealthy" is the status policy (exercise 1.4).
@@ -74,7 +74,7 @@ func TestProbeTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err == nil {
 		t.Fatal("expected an error, got nil")
@@ -104,7 +104,7 @@ func TestProbeConnectFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, url)
+	r := New(testConfig()).Probe(ctx, url)
 
 	if r.Err == nil {
 		t.Fatal("expected an error, got nil")
@@ -128,6 +128,7 @@ func TestProbeResponseHeaderTimeout(t *testing.T) {
 
 	// Short header timeout, generous overall deadline.
 	cfg := DefaultConfig()
+	cfg.AllowPrivate = true // tests use local servers
 	cfg.ResponseHeaderTimeout = 50 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -163,7 +164,7 @@ func TestProbeDoesNotFollowRedirect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, srv.URL)
+	r := New(testConfig()).Probe(ctx, srv.URL)
 
 	if r.Err != nil {
 		t.Fatalf("unexpected error: %v", r.Err)
@@ -174,4 +175,12 @@ func TestProbeDoesNotFollowRedirect(t *testing.T) {
 	if followed {
 		t.Error("redirect was followed; want it returned as the result")
 	}
+}
+
+// testConfig is DefaultConfig with private addresses allowed: the tests
+// probe local httptest servers on 127.0.0.1.
+func testConfig() Config {
+	cfg := DefaultConfig()
+	cfg.AllowPrivate = true
+	return cfg
 }

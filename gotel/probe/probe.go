@@ -10,6 +10,8 @@ import (
 	"net/http/httptrace"
 	"sync"
 	"time"
+
+	"gotel/netguard"
 )
 
 // maxBodyBytes caps how much of a response body is read (blueprint §5.1).
@@ -40,6 +42,11 @@ type Config struct {
 	DialTimeout           time.Duration // DNS lookup + TCP connect
 	TLSHandshakeTimeout   time.Duration // HTTPS handshake
 	ResponseHeaderTimeout time.Duration // request sent -> headers received
+
+	// AllowPrivate lets probes reach internal addresses (localhost,
+	// 192.168.x.x, ...). Off by default: see package netguard (SSRF,
+	// blueprint §13). Turn it on only to monitor your own network.
+	AllowPrivate bool
 }
 
 // DefaultConfig returns starting timeout values. They are not benchmarked yet.
@@ -62,6 +69,11 @@ type Prober struct {
 func New(cfg Config) *Prober {
 	dialer := &net.Dialer{
 		Timeout: cfg.DialTimeout,
+	}
+	if !cfg.AllowPrivate {
+		// Checked on the real IP at connect time, after DNS, so a name
+		// that resolves (or re-resolves) to an internal address is caught.
+		dialer.Control = netguard.Control
 	}
 	transport := &http.Transport{
 		DialContext:           dialer.DialContext,

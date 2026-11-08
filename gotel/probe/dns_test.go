@@ -14,7 +14,7 @@ func TestProbeDNSFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	r := New(DefaultConfig()).Probe(ctx, "http://gotell-test.invalid/")
+	r := New(testConfig()).Probe(ctx, "http://gotell-test.invalid/")
 
 	if r.Err == nil {
 		t.Fatal("expected an error, got nil")
@@ -49,7 +49,7 @@ func TestProbeConnectFailureIsNotDNS(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 
-	r := New(DefaultConfig()).Probe(ctx, "http://"+addr+"/")
+	r := New(testConfig()).Probe(ctx, "http://"+addr+"/")
 
 	if r.Err == nil {
 		t.Fatal("expected an error, got nil")

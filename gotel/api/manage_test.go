@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -21,13 +24,40 @@ func (f *fakeControl) Remove(id int) error { f.calls = append(f.calls, "remove")
 func (f *fakeControl) Pause(id int) error  { f.calls = append(f.calls, "pause"); return nil }
 func (f *fakeControl) Resume(id int) error { f.calls = append(f.calls, "resume"); return nil }
 
-// managed builds a server with a fake scheduler and the test token.
-func managed(t *testing.T) (http.Handler, *fakeControl) {
+// fakeResolver answers DNS lookups from a fixed table; unknown names fail.
+type fakeResolver map[string][]netip.Addr
+
+func (f fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	if addrs, ok := f[host]; ok {
+		return addrs, nil
+	}
+	return nil, errors.New("no such host")
+}
+
+var testDNS = fakeResolver{
+	"localhost":        {netip.MustParseAddr("127.0.0.1")},
+	"public.test":      {netip.MustParseAddr("93.184.216.34")},
+	"sneaky.test":      {netip.MustParseAddr("192.168.1.10")},
+	"metadata.test":    {netip.MustParseAddr("169.254.169.254")},
+	"half-sneaky.test": {netip.MustParseAddr("93.184.216.34"), netip.MustParseAddr("10.0.0.1")},
+}
+
+// managedServer builds a server with a fake scheduler, fake DNS and the
+// test token.
+func managedServer(t *testing.T) (*Server, *fakeControl) {
 	t.Helper()
 	db, _ := fixture(t)
 	ctl := &fakeControl{}
 	s := New(db, ctl, testToken)
 	s.now = func() time.Time { return now }
+	s.resolver = testDNS
+	return s, ctl
+}
+
+// managed is managedServer's handler.
+func managed(t *testing.T) (http.Handler, *fakeControl) {
+	t.Helper()
+	s, ctl := managedServer(t)
 	return s.Handler(), ctl
 }
 
@@ -125,5 +155,42 @@ func TestAddPauseResumeDelete(t *testing.T) {
 	want := []string{"add https://new.test/health", "pause", "resume", "remove"}
 	if strings.Join(ctl.calls, ",") != strings.Join(want, ",") {
 		t.Errorf("scheduler calls = %v, want %v", ctl.calls, want)
+	}
+}
+
+func TestAddTargetRefusesInternalAddresses(t *testing.T) {
+	h, ctl := managed(t)
+	for _, url := range []string{
+		"http://localhost:8080/",
+		"http://127.0.0.1/",
+		"http://[::1]/",
+		"http://10.0.0.5/health",
+		"https://sneaky.test/",      // a public-looking name that resolves to 192.168.1.10
+		"http://metadata.test/",     // resolves to the cloud metadata service
+		"https://half-sneaky.test/", // one public and one private answer
+	} {
+		rec := send(h, http.MethodPost, "/api/targets", testToken, `{"url":"`+url+`","interval_seconds":60}`)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "-allow-private") {
+			t.Errorf("%s: status %d, body %s; want 400 mentioning -allow-private", url, rec.Code, rec.Body)
+		}
+	}
+	if len(ctl.calls) != 0 {
+		t.Errorf("scheduler calls = %v, want none", ctl.calls)
+	}
+
+	// Public addresses, and names that cannot be looked up yet, are fine.
+	for _, url := range []string{"https://public.test/", "https://not-in-dns.test/"} {
+		if rec := send(h, http.MethodPost, "/api/targets", testToken, `{"url":"`+url+`","interval_seconds":60}`); rec.Code != http.StatusCreated {
+			t.Errorf("%s: status %d, body %s; want 201", url, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestAllowPrivateAcceptsInternalAddresses(t *testing.T) {
+	s, _ := managedServer(t)
+	s.SetAllowPrivate(true)
+	rec := send(s.Handler(), http.MethodPost, "/api/targets", testToken, `{"url":"http://localhost:3000/health","interval_seconds":60}`)
+	if rec.Code != http.StatusCreated {
+		t.Errorf("status %d, body %s; want 201 with -allow-private", rec.Code, rec.Body)
 	}
 }

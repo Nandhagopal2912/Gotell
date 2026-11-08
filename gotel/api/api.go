@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -36,19 +38,31 @@ type Control interface {
 	Resume(id int) error
 }
 
+// Resolver looks up a host's IP addresses. *net.Resolver satisfies it.
+type Resolver interface {
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
+}
+
 // Server holds what the handlers need.
 type Server struct {
-	store Store
-	ctl   Control          // nil: management is disabled
-	token string           // required for every change; empty: management is disabled
-	now   func() time.Time // replaced in tests
+	store        Store
+	ctl          Control  // nil: management is disabled
+	token        string   // required for every change; empty: management is disabled
+	allowPrivate bool     // accept targets on internal addresses
+	resolver     Resolver // replaced in tests
+	now          func() time.Time
 }
 
 // New creates a Server reading from s. Changes go to ctl and require
 // token; with a nil ctl or an empty token, the API is read-only.
+// Targets on internal addresses are refused unless SetAllowPrivate(true).
 func New(s Store, ctl Control, token string) *Server {
-	return &Server{store: s, ctl: ctl, token: token, now: time.Now}
+	return &Server{store: s, ctl: ctl, token: token, resolver: net.DefaultResolver, now: time.Now}
 }
+
+// SetAllowPrivate matches the probe's -allow-private setting, so the API
+// refuses what the probe would refuse.
+func (s *Server) SetAllowPrivate(allow bool) { s.allowPrivate = allow }
 
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {

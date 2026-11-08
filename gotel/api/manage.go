@@ -1,15 +1,19 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
 
+	"gotel/netguard"
 	"gotel/store"
 )
 
@@ -88,6 +92,10 @@ func (s *Server) addTarget(w http.ResponseWriter, r *http.Request) {
 	}
 	cleanURL, interval, err := validateTarget(req)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.checkAddress(r.Context(), cleanURL); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -196,4 +204,38 @@ func (s *Server) respondWithTarget(w http.ResponseWriter, r *http.Request, id, c
 		}
 	}
 	writeError(w, http.StatusNotFound, "target not found")
+}
+
+// checkAddress refuses a target whose host is, or resolves to, an internal
+// address, with a clear message. It is a convenience: the probe checks
+// every connection's real IP again (netguard), so a host that changes its
+// DNS answer later is still caught. If the name cannot be looked up now,
+// the target is accepted, and its checks will show the DNS failure.
+func (s *Server) checkAddress(ctx context.Context, rawURL string) error {
+	if s.allowPrivate {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("url is not valid")
+	}
+	host := u.Hostname()
+
+	var addrs []netip.Addr
+	if ip, err := netip.ParseAddr(host); err == nil {
+		addrs = []netip.Addr{ip}
+	} else {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if addrs, err = s.resolver.LookupNetIP(ctx, "ip", host); err != nil {
+			return nil
+		}
+	}
+	for _, ip := range addrs {
+		if netguard.IsBlocked(ip) {
+			return fmt.Errorf("%s points to a private or internal address (%s). Gotell refuses these by default, "+
+				"so a target can't be used to reach internal systems. To monitor your own network, start Gotell with -allow-private", host, ip.Unmap())
+		}
+	}
+	return nil
 }

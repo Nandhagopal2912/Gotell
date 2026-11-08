@@ -23,6 +23,7 @@ const (
 	ClassHTTPOther FailureClass = "http_other" // other status not allowed by policy (e.g. 3xx)
 	ClassBodyRead  FailureClass = "body_read"  // connection broke while reading the body
 	ClassCancelled FailureClass = "cancelled"  // stopped by us (shutdown), not the target's fault
+	ClassBlocked   FailureClass = "blocked"    // internal address refused by the SSRF guard (not retried)
 	ClassUnknown   FailureClass = "unknown"    // an error we could not classify
 )
 
