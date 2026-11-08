@@ -28,6 +28,8 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "address for the dashboard and API (localhost only by default)")
 	tokenFlag := flag.String("token", os.Getenv("GOTELL_TOKEN"), "admin token for changing targets (default: $GOTELL_TOKEN, or one generated and kept in the database)")
 	allowPrivate := flag.Bool("allow-private", false, "allow targets on private or internal addresses (localhost, 192.168.x.x, ...); off by default for safety")
+	maxTargets := flag.Int("max-targets", api.DefaultMaxTargets, "most targets Gotell will watch")
+	maxPerHost := flag.Int("max-targets-per-host", api.DefaultMaxPerHost, "most targets on the same website, so one site is not overloaded")
 	flag.Parse()
 
 	// Open the database first: if it cannot be written, do not start probing.
@@ -89,9 +91,19 @@ func main() {
 	routes := http.NewServeMux()
 	apiServer := api.New(db, schedulerControl{sched}, token)
 	apiServer.SetAllowPrivate(*allowPrivate)
+	apiServer.SetLimits(*maxTargets, *maxPerHost)
 	routes.Handle("/api/", apiServer.Handler())
 	routes.Handle("/", web.Handler())
-	srv := &http.Server{Handler: routes, ReadHeaderTimeout: 5 * time.Second}
+	// Timeouts and a header size cap, so a slow or broken client cannot
+	// hold the dashboard's connections open forever.
+	srv := &http.Server{
+		Handler:           routes,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("dashboard: %v", err)
@@ -101,6 +113,10 @@ func main() {
 	fmt.Printf("Admin token (needed to add, pause or delete targets): %s\n", token)
 	if len(targets) == 0 {
 		fmt.Println("No targets yet: open the dashboard and add one.")
+	}
+	if len(targets) > *maxTargets {
+		fmt.Printf("WARNING: %d targets are saved, more than -max-targets=%d. All are checked, but no new ones can be added.\n",
+			len(targets), *maxTargets)
 	}
 	if *allowPrivate {
 		fmt.Println("WARNING: -allow-private is on: targets may point at internal addresses. Keep the dashboard private.")

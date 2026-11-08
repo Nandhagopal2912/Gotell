@@ -194,3 +194,52 @@ func TestAllowPrivateAcceptsInternalAddresses(t *testing.T) {
 		t.Errorf("status %d, body %s; want 201 with -allow-private", rec.Code, rec.Body)
 	}
 }
+
+func TestTargetLimits(t *testing.T) {
+	s, ctl := managedServer(t) // the fixture already has 2 targets
+	s.SetLimits(4, 1)
+	h := s.Handler()
+	add := func(url string) *httptest.ResponseRecorder {
+		return send(h, http.MethodPost, "/api/targets", testToken, `{"url":"`+url+`","interval_seconds":60}`)
+	}
+
+	if rec := add("https://public.test/a"); rec.Code != http.StatusCreated {
+		t.Fatalf("first target on public.test: status %d, want 201", rec.Code)
+	}
+	// Same host (any case), different path: the per-host limit (1) applies.
+	if rec := add("https://PUBLIC.test/b"); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "-max-targets-per-host") {
+		t.Errorf("second target on the same host: status %d, body %s; want 409 naming the flag", rec.Code, rec.Body)
+	}
+
+	if rec := add("https://not-in-dns.test/"); rec.Code != http.StatusCreated {
+		t.Fatalf("4th target: status %d, want 201", rec.Code)
+	}
+	// Now 4 targets: the total limit applies.
+	if rec := add("https://other.test/"); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "-max-targets") {
+		t.Errorf("5th target: status %d, body %s; want 409 naming -max-targets", rec.Code, rec.Body)
+	}
+
+	// Deleting one frees a place again.
+	if rec := send(h, http.MethodDelete, "/api/targets/1", testToken, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: status %d", rec.Code)
+	}
+	if rec := add("https://other.test/"); rec.Code != http.StatusCreated {
+		t.Errorf("after deleting one: status %d, want 201", rec.Code)
+	}
+	if n := len(ctl.calls); n != 4 { // 3 adds and 1 remove reached the scheduler
+		t.Errorf("scheduler calls = %v", ctl.calls)
+	}
+}
+
+func TestDefaultLimits(t *testing.T) {
+	s, _ := managedServer(t)
+	if s.maxTargets != 200 || s.maxPerHostTgt != 20 {
+		t.Errorf("defaults = %d total, %d per host; want 200 and 20", s.maxTargets, s.maxPerHostTgt)
+	}
+	s.SetLimits(0, -1) // ignored
+	if s.maxTargets != 200 || s.maxPerHostTgt != 20 {
+		t.Errorf("after SetLimits(0, -1): %d and %d; want the defaults kept", s.maxTargets, s.maxPerHostTgt)
+	}
+}

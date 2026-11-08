@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"sync"
 	"time"
 
 	"gotel/store"
@@ -51,13 +52,41 @@ type Server struct {
 	allowPrivate bool     // accept targets on internal addresses
 	resolver     Resolver // replaced in tests
 	now          func() time.Time
+
+	// Limits on targets (blueprint §4.2, §13). addMu makes "check the
+	// limits, then add" one step, so two requests at once cannot both
+	// squeeze in past a limit.
+	addMu         sync.Mutex
+	maxTargets    int // in total
+	maxPerHostTgt int // on the same host name
 }
 
 // New creates a Server reading from s. Changes go to ctl and require
 // token; with a nil ctl or an empty token, the API is read-only.
 // Targets on internal addresses are refused unless SetAllowPrivate(true).
 func New(s Store, ctl Control, token string) *Server {
-	return &Server{store: s, ctl: ctl, token: token, resolver: net.DefaultResolver, now: time.Now}
+	return &Server{
+		store: s, ctl: ctl, token: token, resolver: net.DefaultResolver, now: time.Now,
+		maxTargets: DefaultMaxTargets, maxPerHostTgt: DefaultMaxPerHost,
+	}
+}
+
+// Default limits. 200 is a safe start until the load test (Phase 10)
+// measures what a machine really handles; 20 per host keeps one Gotell
+// from hammering a single site.
+const (
+	DefaultMaxTargets = 200
+	DefaultMaxPerHost = 20
+)
+
+// SetLimits changes the target limits; values below 1 keep the defaults.
+func (s *Server) SetLimits(maxTargets, maxPerHost int) {
+	if maxTargets > 0 {
+		s.maxTargets = maxTargets
+	}
+	if maxPerHost > 0 {
+		s.maxPerHostTgt = maxPerHost
+	}
 }
 
 // SetAllowPrivate matches the probe's -allow-private setting, so the API

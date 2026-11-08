@@ -100,6 +100,16 @@ func (s *Server) addTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.addMu.Lock()
+	defer s.addMu.Unlock()
+	if msg, err := s.checkLimits(r.Context(), cleanURL); err != nil {
+		internalError(w, err)
+		return
+	} else if msg != "" {
+		writeError(w, http.StatusConflict, msg)
+		return
+	}
+
 	id, err := s.store.AddTarget(r.Context(), cleanURL, interval)
 	if errors.Is(err, store.ErrDuplicate) {
 		writeError(w, http.StatusConflict, err.Error())
@@ -238,4 +248,38 @@ func (s *Server) checkAddress(ctx context.Context, rawURL string) error {
 		}
 	}
 	return nil
+}
+
+// checkLimits returns a message if adding rawURL would pass a limit, and
+// "" if it is fine. The caller holds addMu.
+func (s *Server) checkLimits(ctx context.Context, rawURL string) (string, error) {
+	rows, err := s.store.ListTargets(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(rows) >= s.maxTargets {
+		return fmt.Sprintf("limit reached: Gotell is already watching %d targets (the maximum). "+
+			"Delete one, or start Gotell with a higher -max-targets", len(rows)), nil
+	}
+	host := hostOf(rawURL)
+	same := 0
+	for _, t := range rows {
+		if hostOf(t.URL) == host {
+			same++
+		}
+	}
+	if same >= s.maxPerHostTgt {
+		return fmt.Sprintf("limit reached: %d targets already check %s (the maximum per site, so one site is "+
+			"not overloaded). Start Gotell with a higher -max-targets-per-host to allow more", same, host), nil
+	}
+	return "", nil
+}
+
+// hostOf returns a URL's host name in lower case, or "" if it has none.
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }
