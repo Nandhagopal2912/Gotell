@@ -87,6 +87,7 @@ func main() {
 	if counts, err := db.OutcomeCounts(context.Background()); err == nil {
 		fmt.Printf("all runs in %s: %v\n", *dbPath, counts)
 	}
+	printUptime(db, targets)
 }
 
 // printRun shows a run's outcome and every attempt, failed ones included.
@@ -108,4 +109,34 @@ func show(d *time.Duration) string {
 		return "-"
 	}
 	return d.Round(time.Millisecond).String()
+}
+
+// printUptime summarises the last 24 hours, hour by hour, for each target.
+func printUptime(db *store.SQLite, targets []scheduler.Target) {
+	ctx := context.Background()
+	to := time.Now().Add(time.Hour) // include the current, unfinished hour
+	from := to.Add(-25 * time.Hour)
+	if err := db.AggregateHours(ctx, from, to); err != nil {
+		log.Printf("analytics: %v", err)
+		return
+	}
+
+	fmt.Println("\nhourly uptime, last 24h (times shown in UTC and local):")
+	for _, t := range targets {
+		hours, err := db.HourlySummaries(ctx, t.ID, from, to)
+		if err != nil {
+			log.Printf("analytics: %v", err)
+			return
+		}
+		fmt.Println(" ", t.URL)
+		for _, h := range hours {
+			uptime := "  n/a" // no run in this hour could say up or down
+			if h.UptimePct != nil {
+				uptime = fmt.Sprintf("%5.1f%%", *h.UptimePct)
+			}
+			fmt.Printf("    %s UTC (%s local)  %s  runs=%d ok=%d recovered=%d failed=%d cancelled=%d\n",
+				h.Hour.Format("2006-01-02 15:04"), h.Hour.Local().Format("15:04"), uptime,
+				h.ObservedRuns, h.SuccessRuns, h.RecoveredRuns, h.FailedRuns, h.CancelledRuns)
+		}
+	}
 }
