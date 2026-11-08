@@ -253,7 +253,14 @@ function renderTarget(t) {
     renderBars(t),
     el("div", { class: "bar-axis", "aria-hidden": "true" }, el("span", {}, "24h ago"), el("span", {}, "now")),
     renderHourDetail(t),
-    el("button", { type: "button", class: "link", onclick: () => showRuns(t.id) }, "Latest checks, step by step →"));
+    el("div", { class: "card-actions" },
+      el("button", { type: "button", class: "link", onclick: () => showRuns(t.id) }, "Latest checks, step by step →"),
+      el("span", { class: "spacer" }),
+      t.status === "paused"
+        ? el("button", { type: "button", class: "small", onclick: () => changeTarget(t, "resume") }, "Resume")
+        : el("button", { type: "button", class: "small", title: "Maintenance: stop checks without counting downtime",
+            onclick: () => changeTarget(t, "pause") }, "Pause"),
+      el("button", { type: "button", class: "small danger", onclick: () => changeTarget(t, "delete") }, "Delete")));
 }
 
 function stat(label, value, help) {
@@ -412,6 +419,113 @@ for (const chip of document.querySelectorAll("[data-filter]")) {
     renderTargets();
   });
 }
+
+// ------------------------------------------------------------- management
+
+// The admin token is kept in this browser only. Storage can be blocked
+// (private windows, strict settings), so every access is guarded.
+function loadToken() {
+  try { return localStorage.getItem("gotell-token") || ""; } catch { return ""; }
+}
+function saveToken(value) {
+  try {
+    if (value) localStorage.setItem("gotell-token", value);
+    else localStorage.removeItem("gotell-token");
+  } catch { /* the token still works for this page */ }
+  sessionToken = value;
+  showTokenState();
+}
+let sessionToken = loadToken();
+
+function showTokenState() {
+  document.getElementById("token-summary").textContent =
+    sessionToken ? "Admin token: saved in this browser" : "Admin token: not set (needed to make changes)";
+}
+
+function showMessage(text, tone) {
+  const box = document.getElementById("message");
+  box.textContent = text;
+  box.className = `message ${tone || ""}`;
+  box.hidden = !text;
+}
+
+// apiChange sends a change with the admin token and returns the response.
+async function apiChange(method, path, body) {
+  if (!sessionToken) {
+    document.getElementById("token-box").open = true;
+    throw new Error("Enter the admin token first (Gotell prints it when it starts).");
+  }
+  const res = await fetch(path, {
+    method,
+    headers: { Authorization: `Bearer ${sessionToken}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) {
+    document.getElementById("token-box").open = true;
+    throw new Error("The admin token is missing or wrong. Copy it from Gotell's start-up message.");
+  }
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { msg = (await res.json()).error || msg; } catch { /* keep the status text */ }
+    throw new Error(msg);
+  }
+  return res;
+}
+
+async function changeTarget(t, action) {
+  if (action === "delete" &&
+      !confirm(`Stop monitoring ${t.url}?
+
+Its history is kept, but it will no longer be checked.`)) return;
+  try {
+    if (action === "delete") await apiChange("DELETE", `/api/targets/${t.id}`);
+    else await apiChange("POST", `/api/targets/${t.id}/${action}`);
+    const done = { pause: "paused: no checks, and no downtime counted", resume: "resumed: checking again now", delete: "deleted" };
+    showMessage(`${hostOf(t.url)} ${done[action]}.`, "good");
+    if (action === "delete" && state.selected === t.id) document.getElementById("close-detail").click();
+    refresh();
+  } catch (err) {
+    showMessage(err.message, "bad");
+  }
+}
+
+document.getElementById("add-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = document.getElementById("add-url");
+  const url = input.value.trim();
+  if (!/^https?:\/\//i.test(url)) {
+    showMessage("Enter a full URL starting with http:// or https://", "bad");
+    input.focus();
+    return;
+  }
+  try {
+    await apiChange("POST", "/api/targets", {
+      url, interval_seconds: Number(document.getElementById("add-interval").value),
+    });
+    input.value = "";
+    showMessage(`Added ${hostOf(url)}. The first check runs now; results appear within a few seconds.`, "good");
+    refresh();
+    setTimeout(refresh, 5000);
+  } catch (err) {
+    showMessage(err.message, "bad");
+  }
+});
+
+document.getElementById("token-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = document.getElementById("token-input");
+  saveToken(input.value.trim());
+  input.value = "";
+  document.getElementById("token-box").open = false;
+  showMessage(sessionToken ? "Admin token saved in this browser." : "Admin token cleared.", "good");
+});
+
+document.getElementById("token-clear").addEventListener("click", () => {
+  saveToken("");
+  showMessage("Admin token removed from this browser.", "good");
+});
+
+showTokenState();
 
 refresh();
 setInterval(refresh, REFRESH_MS);

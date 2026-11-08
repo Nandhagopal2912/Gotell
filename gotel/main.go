@@ -26,13 +26,8 @@ func main() {
 	duration := flag.Duration("duration", 0, "stop after this long (0 = run until Ctrl+C)")
 	dbPath := flag.String("db", "gotell.db", "SQLite database file")
 	listen := flag.String("listen", "127.0.0.1:8080", "address for the dashboard and API (localhost only by default)")
+	tokenFlag := flag.String("token", os.Getenv("GOTELL_TOKEN"), "admin token for changing targets (default: $GOTELL_TOKEN, or one generated and kept in the database)")
 	flag.Parse()
-
-	targets := []scheduler.Target{
-		{ID: 1, URL: "https://startly-api.onrender.com/health", Interval: 20 * time.Second, Timeout: 30 * time.Second},
-		{ID: 2, URL: "https://does-not-exist.invalid/", Interval: 20 * time.Second, Timeout: 30 * time.Second},
-		{ID: 3, URL: "https://httpbin.org/status/500", Interval: 20 * time.Second, Timeout: 30 * time.Second},
-	}
 
 	// Open the database first: if it cannot be written, do not start probing.
 	db, err := store.Open(*dbPath)
@@ -40,8 +35,18 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	if err := db.UpsertTargets(context.Background(), targets); err != nil {
+
+	// Targets live in the database and are managed from the dashboard;
+	// ones paused before a restart stay paused.
+	targets, err := db.ActiveTargets(context.Background(), probeTimeout)
+	if err != nil {
 		log.Fatal(err)
+	}
+	token := *tokenFlag
+	if token == "" {
+		if token, err = db.AdminToken(context.Background()); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	// Stop on Ctrl+C, or after -duration if it was given.
@@ -79,7 +84,7 @@ func main() {
 		log.Fatalf("dashboard: %v", err)
 	}
 	routes := http.NewServeMux()
-	routes.Handle("/api/", api.New(db).Handler())
+	routes.Handle("/api/", api.New(db, schedulerControl{sched}, token).Handler())
 	routes.Handle("/", web.Handler())
 	srv := &http.Server{Handler: routes, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -87,7 +92,11 @@ func main() {
 			log.Printf("dashboard: %v", err)
 		}
 	}()
-	fmt.Printf("API on http://%s/api/targets\n", ln.Addr())
+	fmt.Printf("Dashboard on http://%s\n", ln.Addr())
+	fmt.Printf("Admin token (needed to add, pause or delete targets): %s\n", token)
+	if len(targets) == 0 {
+		fmt.Println("No targets yet: open the dashboard and add one.")
+	}
 
 	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.
 	go sched.Run(ctx)
@@ -153,8 +162,26 @@ func main() {
 	if counts, err := db.NotificationCounts(context.Background()); err == nil {
 		fmt.Printf("notifications: %v\n", counts)
 	}
+	// Include targets added from the dashboard while running.
+	if current, err := db.ActiveTargets(context.Background(), probeTimeout); err == nil {
+		targets = current
+	}
 	printUptime(db, targets)
 }
+
+// probeTimeout is the deadline for one whole check of a target, retries
+// included.
+const probeTimeout = 30 * time.Second
+
+// schedulerControl lets the API change the running scheduler's targets.
+type schedulerControl struct{ s *scheduler.Scheduler }
+
+func (c schedulerControl) Add(id int, url string, interval time.Duration) error {
+	return c.s.Add(scheduler.Target{ID: id, URL: url, Interval: interval, Timeout: probeTimeout})
+}
+func (c schedulerControl) Remove(id int) error { return c.s.Remove(id) }
+func (c schedulerControl) Pause(id int) error  { return c.s.Pause(id) }
+func (c schedulerControl) Resume(id int) error { return c.s.Resume(id) }
 
 // heartbeat updates the session every 30 seconds until ctx ends. If Gotell
 // crashes, the last heartbeat marks where its coverage stopped.

@@ -32,6 +32,7 @@ func (s *SQLite) ListTargets(ctx context.Context) ([]TargetRow, error) {
 		        WHERE r.target_id = t.id AND r.outcome != 'cancelled'
 		        ORDER BY r.started_at DESC LIMIT 1)
 		FROM targets t
+		WHERE t.deleted_at IS NULL
 		ORDER BY t.id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing targets: %w", err)

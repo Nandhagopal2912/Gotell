@@ -320,6 +320,56 @@ td.wrap { white-space: normal; overflow-wrap: anywhere; min-width: 220px; max-wi
 .s-body { background: var(--s-body); }
 .s-wait { background: var(--s-wait); }
 
+/* ---- management ---- */
+
+.manage {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 10px;
+}
+.manage h2 { margin: 0; }
+.manage code { font-size: 12px; }
+.add-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.field.grow { flex: 1 1 260px; min-width: 0; }
+input, select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  width: 100%;
+}
+input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.add-form button, .small {
+  font: inherit;
+  font-size: 14px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.add-form .link { padding: 7px 4px; border: 0; background: none; color: var(--focus); }
+button.primary { background: var(--focus); border-color: var(--focus); color: #fff; font-weight: 600; }
+.small { font-size: 13px; padding: 3px 10px; }
+.small.danger { color: var(--bad); }
+.small:hover, .add-form button:hover { filter: brightness(1.08); }
+.token-box summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.token-box[open] { display: grid; gap: 8px; }
+.message { margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--panel-2); border-left: 3px solid var(--off); font-size: 14px; }
+.message.good { border-left-color: var(--good); }
+.message.bad { border-left-color: var(--bad); color: var(--bad); }
+
+.card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.card-actions .spacer { flex: 1; }
+
 @media (max-width: 560px) {
   .guide dl { grid-template-columns: 1fr; gap: 2px; }
   .guide dd { margin-bottom: 8px; }

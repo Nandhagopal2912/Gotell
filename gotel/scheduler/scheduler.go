@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"time"
 
@@ -16,6 +17,7 @@ type Target struct {
 	URL      string
 	Interval time.Duration // how often to probe
 	Timeout  time.Duration // overall deadline for each probe
+	Paused   bool          // start in maintenance mode (e.g. paused before a restart)
 }
 
 // entry is the scheduler's private bookkeeping for one target.
@@ -26,11 +28,26 @@ type entry struct {
 	paused   bool // maintenance mode: do not dispatch (blueprint §12.2)
 }
 
-// command asks the Run goroutine to pause or resume one target.
+// commandKind says what a command asks the Run goroutine to do.
+type commandKind int
+
+const (
+	cmdPause commandKind = iota
+	cmdResume
+	cmdAdd
+	cmdRemove
+)
+
+// command asks the Run goroutine to change its targets.
 type command struct {
+	kind     commandKind
 	targetID int
-	pause    bool
+	target   Target // for cmdAdd
 }
+
+// ErrBusy means the scheduler could not take a command in time (it is
+// shutting down, or very overloaded).
+var ErrBusy = errors.New("scheduler busy")
 
 // Scheduler dispatches due targets to a worker pool.
 // All of its state is owned by the Run goroutine, so it needs no mutex.
@@ -54,12 +71,12 @@ func New(pool *worker.Pool, tick, jitter time.Duration, targets []Target) *Sched
 		jitter:   jitter,
 		entries:  make(map[int]*entry),
 		results:  make(chan worker.JobResult),
-		commands: make(chan command, 16),
+		commands: make(chan command, 64),
 	}
 	now := time.Now()
 	for _, t := range targets {
 		// Spread the first runs out too, instead of all at start-up.
-		s.entries[t.ID] = &entry{target: t, nextDue: nextDueAfter(now, 0, jitter)}
+		s.entries[t.ID] = &entry{target: t, paused: t.Paused, nextDue: nextDueAfter(now, 0, jitter)}
 	}
 	return s
 }
@@ -74,15 +91,38 @@ func nextDueAfter(now time.Time, interval, jitter time.Duration) time.Time {
 }
 
 // Pause stops new probes of a target until Resume is called. A probe that
-// is already running finishes normally. It takes effect on the scheduler's
-// next loop, so Run must be running.
-func (s *Scheduler) Pause(targetID int) {
-	s.commands <- command{targetID: targetID, pause: true}
+// is already running finishes normally. Like every command, it takes
+// effect on the scheduler's next loop.
+func (s *Scheduler) Pause(targetID int) error {
+	return s.send(command{kind: cmdPause, targetID: targetID})
 }
 
 // Resume makes a paused target due again immediately.
-func (s *Scheduler) Resume(targetID int) {
-	s.commands <- command{targetID: targetID, pause: false}
+func (s *Scheduler) Resume(targetID int) error {
+	return s.send(command{kind: cmdResume, targetID: targetID})
+}
+
+// Add starts monitoring a new target while the scheduler runs. Its first
+// probe is due right away.
+func (s *Scheduler) Add(t Target) error {
+	return s.send(command{kind: cmdAdd, targetID: t.ID, target: t})
+}
+
+// Remove stops monitoring a target. A probe already running finishes, and
+// its result is still delivered.
+func (s *Scheduler) Remove(targetID int) error {
+	return s.send(command{kind: cmdRemove, targetID: targetID})
+}
+
+// send queues a command, giving up after a short wait so that a caller
+// (such as an HTTP request) never hangs while the scheduler shuts down.
+func (s *Scheduler) send(c command) error {
+	select {
+	case s.commands <- c:
+		return nil
+	case <-time.After(2 * time.Second):
+		return ErrBusy
+	}
 }
 
 // Results returns completed probes, forwarded from the pool. Callers must
@@ -110,15 +150,29 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.dispatchDue(now)
 
 		case c := <-s.commands:
-			if e, ok := s.entries[c.targetID]; ok {
-				e.paused = c.pause
-				if !c.pause {
-					e.nextDue = time.Now() // resumed: due right away
-				}
-			}
+			s.apply(c)
 
 		case jr := <-s.pool.Results():
 			s.finish(jr)
+		}
+	}
+}
+
+// apply carries out one command. Only the Run goroutine calls it.
+func (s *Scheduler) apply(c command) {
+	switch c.kind {
+	case cmdAdd:
+		if _, exists := s.entries[c.targetID]; !exists {
+			s.entries[c.targetID] = &entry{target: c.target, paused: c.target.Paused, nextDue: time.Now()}
+		}
+	case cmdRemove:
+		delete(s.entries, c.targetID)
+	case cmdPause, cmdResume:
+		if e, ok := s.entries[c.targetID]; ok {
+			e.paused = c.kind == cmdPause
+			if !e.paused {
+				e.nextDue = time.Now() // resumed: due right away
+			}
 		}
 	}
 }

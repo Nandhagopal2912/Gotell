@@ -49,6 +49,42 @@
       </dl>
     </details>
 
+    <section class="manage" aria-labelledby="manage-title">
+      <h2 id="manage-title">Add a target</h2>
+      <form id="add-form" class="add-form" novalidate>
+        <label class="field grow">
+          <span>URL to check</span>
+          <input id="add-url" type="url" inputmode="url" placeholder="https://your-app.example.com/health" required>
+        </label>
+        <label class="field">
+          <span>Check every</span>
+          <select id="add-interval">
+            <option value="30">30 seconds</option>
+            <option value="60" selected>1 minute</option>
+            <option value="300">5 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="3600">1 hour</option>
+          </select>
+        </label>
+        <button type="submit" class="primary">Add</button>
+      </form>
+      <p class="hint">Use a health URL that answers quickly, such as <code>/health</code>. Only check sites you own or may test.</p>
+
+      <details class="token-box" id="token-box">
+        <summary id="token-summary">Admin token</summary>
+        <p class="hint">Changes need the admin token that Gotell prints when it starts. It is saved in this browser only.</p>
+        <form id="token-form" class="add-form" novalidate>
+          <label class="field grow">
+            <span>Admin token</span>
+            <input id="token-input" type="password" autocomplete="off" spellcheck="false">
+          </label>
+          <button type="submit">Save</button>
+          <button type="button" id="token-clear" class="link">Forget</button>
+        </form>
+      </details>
+      <p class="message" id="message" role="status" aria-live="polite" hidden></p>
+    </section>
+
     <section aria-labelledby="targets-title">
       <div class="section-head">
         <h2 id="targets-title">Targets</h2>

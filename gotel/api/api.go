@@ -1,5 +1,6 @@
-// Package api serves Gotell's data as JSON for the dashboard
-// (blueprint Phase 9). This file is the read-only part.
+// Package api serves Gotell's data as JSON for the dashboard, and lets
+// the dashboard manage targets (blueprint Phase 9). This file is the
+// read-only part; manage.go holds the changes.
 package api
 
 import (
@@ -13,23 +14,40 @@ import (
 	"gotel/store"
 )
 
-// Store is what the API reads. *store.SQLite satisfies it.
+// Store is what the API reads and changes. *store.SQLite satisfies it.
 type Store interface {
 	ListTargets(ctx context.Context) ([]store.TargetRow, error)
 	HourlySummaries(ctx context.Context, targetID int, from, to time.Time) ([]store.HourSummary, error)
 	RecentRuns(ctx context.Context, targetID, limit int) ([]store.RunRow, error)
 	RecentIncidents(ctx context.Context, limit int) ([]store.IncidentRow, error)
+
+	AddTarget(ctx context.Context, url string, interval time.Duration) (int, error)
+	DeleteTarget(ctx context.Context, id int) error
+	PauseTarget(ctx context.Context, targetID int, at time.Time) error
+	ResumeTarget(ctx context.Context, targetID int, at time.Time) error
+}
+
+// Control applies target changes to the running scheduler, so they take
+// effect at once, without a restart.
+type Control interface {
+	Add(id int, url string, interval time.Duration) error
+	Remove(id int) error
+	Pause(id int) error
+	Resume(id int) error
 }
 
 // Server holds what the handlers need.
 type Server struct {
 	store Store
+	ctl   Control          // nil: management is disabled
+	token string           // required for every change; empty: management is disabled
 	now   func() time.Time // replaced in tests
 }
 
-// New creates a Server reading from s.
-func New(s Store) *Server {
-	return &Server{store: s, now: time.Now}
+// New creates a Server reading from s. Changes go to ctl and require
+// token; with a nil ctl or an empty token, the API is read-only.
+func New(s Store, ctl Control, token string) *Server {
+	return &Server{store: s, ctl: ctl, token: token, now: time.Now}
 }
 
 // Handler returns the HTTP routes.
@@ -40,6 +58,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/targets/{id}", s.getTarget)
 	mux.HandleFunc("GET /api/targets/{id}/runs", s.listRuns)
 	mux.HandleFunc("GET /api/incidents", s.listIncidents)
+
+	mux.Handle("POST /api/targets", s.requireToken(s.addTarget))
+	mux.Handle("DELETE /api/targets/{id}", s.requireToken(s.deleteTarget))
+	mux.Handle("POST /api/targets/{id}/pause", s.requireToken(s.pauseTarget))
+	mux.Handle("POST /api/targets/{id}/resume", s.requireToken(s.resumeTarget))
 	return mux
 }
 

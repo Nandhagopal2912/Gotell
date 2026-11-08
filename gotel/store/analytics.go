@@ -46,11 +46,25 @@ var addedColumns = []struct{ name, def string }{
 	{"gap_seconds", "REAL NOT NULL DEFAULT 0"},
 }
 
+// targetColumns were added to targets after Phase 6.
+var targetColumns = []struct{ name, def string }{
+	{"deleted_at", "TEXT"}, // Phase 9: deleting a target archives it, keeping its history
+}
+
 // migrate adds columns that newer versions of Gotell need to tables that
-// older versions created. Existing rows are kept.
+// older versions created. Existing rows are kept, and running it again
+// changes nothing (it is idempotent).
 func migrate(db *sql.DB) error {
+	if err := addColumns(db, "historical_metrics", addedColumns); err != nil {
+		return err
+	}
+	return addColumns(db, "targets", targetColumns)
+}
+
+// addColumns adds each column that table does not have yet.
+func addColumns(db *sql.DB, table string, cols []struct{ name, def string }) error {
 	existing := make(map[string]bool)
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('historical_metrics')`)
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
 	if err != nil {
 		return err
 	}
@@ -67,12 +81,12 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
-	for _, c := range addedColumns {
+	for _, c := range cols {
 		if existing[c.name] {
 			continue
 		}
-		if _, err := db.Exec(`ALTER TABLE historical_metrics ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
-			return fmt.Errorf("adding column %s: %w", c.name, err)
+		if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return fmt.Errorf("adding column %s.%s: %w", table, c.name, err)
 		}
 	}
 	return nil

@@ -65,7 +65,7 @@ func fixture(t *testing.T) (*store.SQLite, http.Handler) {
 		t.Fatal(err)
 	}
 
-	s := New(db)
+	s := New(db, nil, "")
 	s.now = func() time.Time { return now }
 	return db, s.Handler()
 }
@@ -180,9 +180,9 @@ func TestBadRequestsAreRejected(t *testing.T) {
 func TestWrongMethodIsRejected(t *testing.T) {
 	_, h := fixture(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/targets", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/targets", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("POST /api/targets: status %d, want 405 (read-only for now)", rec.Code)
+		t.Errorf("PUT /api/targets: status %d, want 405", rec.Code)
 	}
 }
 

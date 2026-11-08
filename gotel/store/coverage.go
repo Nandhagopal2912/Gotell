@@ -200,7 +200,7 @@ func updateCoverage(ctx context.Context, tx *sql.Tx, from, to, now time.Time) er
 
 // loadTargets reads every target's interval and creation time.
 func loadTargets(ctx context.Context, tx *sql.Tx) ([]targetInfo, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, interval_seconds, created_at FROM targets`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, interval_seconds, created_at FROM targets WHERE deleted_at IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("reading targets: %w", err)
 	}
