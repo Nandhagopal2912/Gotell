@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gotell</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Gotell</h1>
+      <p class="tagline">Honest uptime for your apps: down, slow, or just waking up?</p>
+    </div>
+    <p class="updated" id="updated" aria-live="polite">Loading…</p>
+  </header>
+
+  <main>
+    <p class="error" id="error" role="alert" hidden></p>
+
+    <section class="overview" aria-label="Overview">
+      <p class="headline" id="headline">Checking your targets…</p>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <details class="guide">
+      <summary>How to read this dashboard</summary>
+      <dl>
+        <dt><span class="pill up">up</span></dt>
+        <dd>The latest check got a healthy answer (a 2xx status).</dd>
+        <dt><span class="pill failing">failing</span></dt>
+        <dd>The latest check failed, but not 3 times in a row yet. Gotell waits for 3 so a single blip doesn't raise an alarm.</dd>
+        <dt><span class="pill down">down</span></dt>
+        <dd>3 or more checks failed in a row: an incident is open until the next healthy check.</dd>
+        <dt><span class="pill paused">paused</span></dt>
+        <dd>Maintenance: checks are stopped, and this time never counts against uptime.</dd>
+        <dt>Uptime</dt>
+        <dd>Healthy checks ÷ checks that said up or down. Checks Gotell itself cancelled don't count either way. No data shows as <em>n/a</em>, never as a made-up 100%.</dd>
+        <dt>Recovered</dt>
+        <dd>A check that failed first, then succeeded on a retry. It counts as up, but is shown separately: often a sign the app was waking from sleep (a <em>suspected</em> cold start).</dd>
+        <dt>p50 / p95</dt>
+        <dd>Time to first byte. p50 is the typical wait (half the checks were faster); p95 is the bad-but-normal wait (1 in 20 was slower). Averages hide both, so Gotell shows these instead.</dd>
+        <dt>Missing</dt>
+        <dd>Checks that should have happened while Gotell was running, but have no result.</dd>
+        <dt>Gotell off</dt>
+        <dd>Time when Gotell itself wasn't running. It's a gap in monitoring, never counted as the target being down.</dd>
+        <dt>“–”</dt>
+        <dd>Not measured (for example, a reused connection has no new DNS lookup). Never shown as 0 ms.</dd>
+      </dl>
+    </details>
+
+    <section aria-labelledby="targets-title">
+      <div class="section-head">
+        <h2 id="targets-title">Targets</h2>
+        <div class="filter" role="group" aria-label="Show targets">
+          <button type="button" class="chip" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" class="chip" data-filter="problems" aria-pressed="false">Problems only</button>
+        </div>
+      </div>
+      <p class="legend" aria-label="Uptime bar colours">
+        Last 24 hours, one bar per hour. Click a bar for details.
+        <span class="key"><span class="swatch b-good"></span>≥ 99.5%</span>
+        <span class="key"><span class="swatch b-warn"></span>≥ 95%</span>
+        <span class="key"><span class="swatch b-bad"></span>&lt; 95%</span>
+        <span class="key"><span class="swatch b-nodata"></span>no data</span>
+        <span class="key"><span class="swatch b-off"></span>Gotell off</span>
+      </p>
+      <div id="targets" class="targets"></div>
+    </section>
+
+    <section id="detail" class="detail" hidden aria-labelledby="detail-title">
+      <div class="section-head">
+        <h2 id="detail-title">Latest checks</h2>
+        <button type="button" id="close-detail" class="link">Close</button>
+      </div>
+      <p class="detail-url" id="detail-url"></p>
+      <p class="stage-legend" aria-label="Time breakdown colours">
+        Where the time went:
+        <span class="key"><span class="swatch s-dns"></span>DNS lookup</span>
+        <span class="key"><span class="swatch s-tcp"></span>connect</span>
+        <span class="key"><span class="swatch s-tls"></span>HTTPS handshake</span>
+        <span class="key"><span class="swatch s-server"></span>waiting for the app</span>
+        <span class="key"><span class="swatch s-body"></span>download</span>
+        <span class="key"><span class="swatch s-wait"></span>waited, no answer</span>
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">When</th>
+              <th scope="col">Check</th>
+              <th scope="col">Result</th>
+              <th scope="col">Where the time went</th>
+              <th scope="col" class="num">Total</th>
+            </tr>
+          </thead>
+          <tbody id="runs"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="incidents-title">
+      <h2 id="incidents-title">Incidents</h2>
+      <p class="hint">An incident opens after 3 failed checks in a row, and closes at the first healthy one.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Target</th>
+              <th scope="col">Down since</th>
+              <th scope="col">Recovered</th>
+              <th scope="col" class="num">Duration</th>
+              <th scope="col">What went wrong</th>
+            </tr>
+          </thead>
+          <tbody id="incidents"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -5,22 +5,27 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"time"
 
+	"gotel/api"
 	"gotel/incident"
 	"gotel/probe"
 	"gotel/runner"
 	"gotel/scheduler"
 	"gotel/store"
 	"gotel/telemetry"
+	"gotel/web"
 	"gotel/worker"
 )
 
 func main() {
 	duration := flag.Duration("duration", 0, "stop after this long (0 = run until Ctrl+C)")
 	dbPath := flag.String("db", "gotell.db", "SQLite database file")
+	listen := flag.String("listen", "127.0.0.1:8080", "address for the dashboard and API (localhost only by default)")
 	flag.Parse()
 
 	targets := []scheduler.Target{
@@ -67,6 +72,23 @@ func main() {
 	// hours missed while Gotell was off (blueprint §11.1).
 	go db.RunAggregator(ctx, 5*time.Minute, store.DefaultRetention)
 
+	// The dashboard and its API. Listen first, so a busy port
+	// fails at start-up instead of silently later.
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("dashboard: %v", err)
+	}
+	routes := http.NewServeMux()
+	routes.Handle("/api/", api.New(db).Handler())
+	routes.Handle("/", web.Handler())
+	srv := &http.Server{Handler: routes, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("dashboard: %v", err)
+		}
+	}()
+	fmt.Printf("API on http://%s/api/targets\n", ln.Addr())
+
 	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.
 	go sched.Run(ctx)
 	go telemetry.Forward(context.Background(), sched.Results(), tel)
@@ -111,6 +133,12 @@ func main() {
 			log.Printf("ERROR %d more runs were not saved during shutdown", lost)
 		}
 	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("dashboard shutdown: %v", err)
+	}
+	cancelShutdown()
 
 	if err := db.EndSession(context.Background(), session, time.Now()); err != nil {
 		log.Printf("ending session: %v", err)
