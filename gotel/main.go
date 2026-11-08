@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"gotel/incident"
 	"gotel/probe"
 	"gotel/runner"
 	"gotel/scheduler"
@@ -70,12 +71,30 @@ func main() {
 	go sched.Run(ctx)
 	go telemetry.Forward(context.Background(), sched.Results(), tel)
 
-	// A small "tee" stage: print each run, then pass it on to the writer.
+	// Alerts: printed for now. Quiet hours 23:00-07:00 local hold alerts
+	// (recorded, never dropped) unless a target stays down for 30 minutes.
+	quiet := incident.QuietHours{Start: 23 * 60, End: 7 * 60, Location: time.Local}
+	dispatcher := incident.NewDispatcher(
+		incident.Printer{Out: os.Stdout, Location: time.Local}, db, quiet, 30*time.Minute)
+	go dispatcher.Run(ctx, 30*time.Second)
+
+	// Incidents: DOWN after 3 failed runs in a row, RECOVERED at the first
+	// healthy run. Open incidents are reloaded, so a restart never alerts twice.
+	detector, err := incident.NewDetector(context.Background(), db, dispatcher, 3)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// A small "tee" stage: print each run, check it for incidents, then pass
+	// it on to the writer.
 	printed := make(chan worker.JobResult)
 	go func() {
 		defer close(printed)
 		for jr := range tel.Records() {
 			printRun(jr.Run)
+			if err := detector.Observe(context.Background(), jr.Run); err != nil {
+				log.Printf("incidents: %v", err)
+			}
 			printed <- jr
 		}
 	}()
@@ -102,6 +121,9 @@ func main() {
 		st.Sent, st.Dropped, ws.Batches, ws.Written, ws.WriteErrors, ws.Quarantined, ws.Lost)
 	if counts, err := db.OutcomeCounts(context.Background()); err == nil {
 		fmt.Printf("all runs in %s: %v\n", *dbPath, counts)
+	}
+	if counts, err := db.NotificationCounts(context.Background()); err == nil {
+		fmt.Printf("notifications: %v\n", counts)
 	}
 	printUptime(db, targets)
 }
