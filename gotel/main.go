@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"time"
@@ -11,18 +12,30 @@ import (
 	"gotel/probe"
 	"gotel/runner"
 	"gotel/scheduler"
+	"gotel/store"
 	"gotel/telemetry"
 	"gotel/worker"
 )
 
 func main() {
 	duration := flag.Duration("duration", 0, "stop after this long (0 = run until Ctrl+C)")
+	dbPath := flag.String("db", "gotell.db", "SQLite database file")
 	flag.Parse()
 
 	targets := []scheduler.Target{
 		{ID: 1, URL: "https://startly-api.onrender.com/health", Interval: 20 * time.Second, Timeout: 30 * time.Second},
 		{ID: 2, URL: "https://does-not-exist.invalid/", Interval: 20 * time.Second, Timeout: 30 * time.Second},
 		{ID: 3, URL: "https://httpbin.org/status/500", Interval: 20 * time.Second, Timeout: 30 * time.Second},
+	}
+
+	// Open the database first: if it cannot be written, do not start probing.
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.UpsertTargets(context.Background(), targets); err != nil {
+		log.Fatal(err)
 	}
 
 	// Stop on Ctrl+C, or after -duration if it was given.
@@ -39,19 +52,41 @@ func main() {
 	pool := worker.NewPoolWithPolicies(probe.New(probe.DefaultConfig()), 4, 16, rp, probe.Default2xx)
 	sched := scheduler.New(pool, time.Second, 2*time.Second, targets)
 	tel := telemetry.New(64)
+	writer := store.NewWriter(db, store.DefaultWriterConfig())
 
-	// The pipeline: scheduler -> telemetry -> this loop (storage, in Phase 6).
+	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.
 	go sched.Run(ctx)
 	go telemetry.Forward(context.Background(), sched.Results(), tel)
 
-	fmt.Println("Gotell running. Press Ctrl+C to stop.")
-	for jr := range tel.Records() { // ends after shutdown has finished
-		printRun(jr.Run)
+	// A small "tee" stage: print each run, then pass it on to the writer.
+	printed := make(chan worker.JobResult)
+	go func() {
+		defer close(printed)
+		for jr := range tel.Records() {
+			printRun(jr.Run)
+			printed <- jr
+		}
+	}()
+
+	fmt.Printf("Gotell running, saving to %s. Press Ctrl+C to stop.\n", *dbPath)
+	if err := writer.Run(printed); err != nil {
+		log.Printf("storage error: %v", err)
+		stop() // stop probing: results could not be saved anyway
+		lost := 0
+		for range printed { // keep draining so the engine can shut down
+			lost++
+		}
+		if lost > 0 {
+			log.Printf("ERROR %d more runs were not saved during shutdown", lost)
+		}
 	}
 
-	st := tel.Stats()
-	fmt.Printf("\nstopped cleanly. telemetry: sent=%d dropped=%d max_wait=%v capacity=%d\n",
-		st.Sent, st.Dropped, st.MaxWait, st.Capacity)
+	st, ws := tel.Stats(), writer.Stats()
+	fmt.Printf("\nstopped. telemetry: sent=%d dropped=%d | writer: batches=%d written=%d errors=%d quarantined=%d lost=%d\n",
+		st.Sent, st.Dropped, ws.Batches, ws.Written, ws.WriteErrors, ws.Quarantined, ws.Lost)
+	if counts, err := db.OutcomeCounts(context.Background()); err == nil {
+		fmt.Printf("all runs in %s: %v\n", *dbPath, counts)
+	}
 }
 
 // printRun shows a run's outcome and every attempt, failed ones included.

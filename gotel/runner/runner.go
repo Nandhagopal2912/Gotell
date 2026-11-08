@@ -27,9 +27,10 @@ func Do(ctx context.Context, p Prober, url string, rp RetryPolicy, sp probe.Stat
 	stoppedByUs := false
 
 	for n := 1; n <= rp.MaxAttempts; n++ {
+		started := time.Now()
 		r := attempt(ctx, p, url, rp.AttemptTimeout)
 		class := Classify(r, sp)
-		run.Attempts = append(run.Attempts, Attempt{Number: n, Result: r, Class: class})
+		run.Attempts = append(run.Attempts, Attempt{Number: n, StartedAt: started, Result: r, Class: class})
 
 		if class == ClassNone || !Retryable(class) || n == rp.MaxAttempts {
 			break

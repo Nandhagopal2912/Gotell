@@ -6,6 +6,11 @@ docs/
 *.test
 *.out
 
+# Gotell database files (data, not code)
+*.db
+*.db-wal
+*.db-shm
+
 # Editor and OS files
 .vscode/
 .idea/

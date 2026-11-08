@@ -39,9 +39,10 @@ const (
 // Attempt is one HTTP try inside a run. Every attempt is kept, including
 // failed ones that a later retry recovered from (blueprint §6.1).
 type Attempt struct {
-	Number int          // 1 for the first try, 2 for the first retry, ...
-	Result probe.Result // everything the probe observed during this try
-	Class  FailureClass // ClassNone if the attempt was healthy
+	Number    int          // 1 for the first try, 2 for the first retry, ...
+	StartedAt time.Time    // when this try started
+	Result    probe.Result // everything the probe observed during this try
+	Class     FailureClass // ClassNone if the attempt was healthy
 }
 
 // Run is one scheduled monitoring check of one target.

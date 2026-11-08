@@ -4,7 +4,7 @@ A lightweight Go engine for black-box HTTP/HTTPS availability and latency monito
 
 Gotell probes your endpoints **from the outside**, the way a user would. It records whether they answered, how long each stage took (DNS, TCP connect, TLS handshake, time to first byte, total), and keeps an honest history of availability and latency.
 
-> **Status:** early development. Phases 1–4 of 10 are complete: Gotell can probe, trace, schedule, retry and classify, but does not store results yet. It is not production-ready, and no capacity or performance claims are made until they are backed by benchmarks.
+> **Status:** early development. Phases 1–6 of 10 are complete: Gotell can probe, trace, schedule, retry and classify, and saves every run and attempt to SQLite. Analytics (uptime %, latency percentiles), alerts and the dashboard are not built yet. It is not production-ready, and no capacity or performance claims are made until they are backed by benchmarks.
 
 ---
 
@@ -80,12 +80,12 @@ Retries + classification (failure types)                           [built]
 (suspected cold starts: planned)
         |
         v
-Bounded telemetry channel (backpressure, no silent drops)
+Bounded telemetry channel (backpressure, no silent drops)          [built]
         |
         v
-Single SQLite batch writer (WAL)
+Single SQLite batch writer (WAL)                                   [built]
         |
-        +--> Raw probe runs and attempts
+        +--> Raw probe runs and attempts                           [built]
         +--> Hourly aggregates
                     |
                     v
@@ -102,9 +102,9 @@ Gotell runs as a **single instance** first, designed so that distributed probe a
 | 2. Trace instrumentation | DNS, TCP, TLS, TTFB, total time, connection reuse | ✅ Done |
 | 3. Scheduler and worker pool | Central scheduler, bounded queue, fixed worker capacity | ✅ Done |
 | 4. Retry and classification | Run/attempt model, configurable retry policy | ✅ Done |
-| 5. Telemetry channel | Bounded channel with backpressure metrics | ⏳ Next |
-| 6. SQLite writer | WAL setup and transactional batch writer | |
-| 7. Analytics and retention | Idempotent hourly rollups, raw-data pruning | |
+| 5. Telemetry channel | Bounded channel with backpressure metrics | ✅ Done |
+| 6. SQLite writer | WAL setup and transactional batch writer | ✅ Done |
+| 7. Analytics and retention | Idempotent hourly rollups, raw-data pruning | ⏳ Next |
 | 8. Incidents and notifications | Incident state, deduplication, timezone-aware windows | |
 | 9. API and dashboard | Target management and historical views | |
 | 10. Production hardening | Security controls, resource limits, load tests | |
@@ -135,6 +135,17 @@ Gotell runs as a **single instance** first, designed so that distributed probe a
 - Retries with doubling waits for `dns`, `connect`, `timeout`, `http_5xx` and `body_read`; no retries for `tls`, 4xx, cancellations or unknown errors. A retry is never started if it could not finish before the run's deadline.
 - Run outcomes: `success`, `recovered` (failed, then healthy), `failed`, `cancelled`.
 
+**Phase 5: telemetry channel**
+- A bounded buffer between the engine and storage. When it is full, senders wait (backpressure) instead of records being dropped.
+- Measured: buffer depth and capacity, records sent, time senders waited (total and maximum), and dropped records, which must stay at 0. A record can only be dropped if shutdown interrupts a wait, and then it is counted and reported, never silent.
+
+**Phase 6: SQLite writer**
+- Every run and every attempt is saved to one SQLite file (`gotell.db` by default), using the pure-Go `modernc.org/sqlite` driver, so no C compiler is needed to build Gotell.
+- WAL mode, a busy timeout and foreign keys are set on every connection; one writer goroutine saves runs in batches of up to 100, or every 3 seconds, one transaction per batch.
+- Timestamps are stored as fixed-width UTC text, so they sort in time order; stages that were not measured are stored as `NULL`, never 0.
+- Failed writes are classified: temporary errors (locked, busy, disk full, I/O) are retried with capped backoff and never discarded; a record that breaks a schema rule is quarantined on its own, so it cannot block the rest; fatal errors (read-only, corrupt) stop Gotell cleanly. Anything that could not be saved is counted and logged.
+- Configured targets are saved at start-up and updated on restart, never duplicated.
+
 Example output of `go run .`, catching a real cold start on a free-tier host:
 
 ```
@@ -143,7 +154,12 @@ recovered https://startly-api.onrender.com/health  (2 attempt(s), 13.659s)
   #2 none       status=200 ttfb=3.156s dns=62ms tcp=10ms tls=16ms total=3.157s
 ```
 
-Results are printed, not yet stored: persistence arrives with the telemetry channel (Phase 5) and the SQLite writer (Phase 6).
+When it stops, Gotell reports what it saved, for example:
+
+```
+stopped. telemetry: sent=5 dropped=0 | writer: batches=4 written=5 errors=0 quarantined=0 lost=0
+all runs in gotell.db: map[cancelled:2 failed:3]
+```
 
 ## Project layout
 
@@ -151,8 +167,8 @@ Results are printed, not yet stored: persistence arrives with the telemetry chan
 .
 ├── README.md
 └── gotel/
-    ├── go.mod
-    ├── main.go              # small CLI: runs a few URLs and prints every attempt
+    ├── go.mod, go.sum
+    ├── main.go              # runs the engine, prints every run, saves to SQLite
     ├── probe/               # one HTTP attempt: timeouts, tracing, status policy
     │   ├── probe.go         # Prober, Config, Result
     │   ├── policy.go        # StatusPolicy, Default2xx
@@ -165,8 +181,16 @@ Results are printed, not yet stored: persistence arrives with the telemetry chan
     ├── worker/              # bounded worker pool
     │   ├── pool.go          # Pool, Job, JobResult, Shutdown
     │   └── *_test.go
-    └── scheduler/           # decides which targets are due
-        ├── scheduler.go     # Scheduler, Target, pause/resume, jitter, lag
+    ├── scheduler/           # decides which targets are due
+    │   ├── scheduler.go     # Scheduler, Target, pause/resume, jitter, lag
+    │   └── *_test.go
+    ├── telemetry/           # bounded buffer between the engine and storage
+    │   ├── telemetry.go     # Telemetry, Send, Stats, Forward
+    │   └── *_test.go
+    └── store/               # SQLite storage
+        ├── sqlite.go        # schema, Open, UpsertTargets, WriteBatch
+        ├── errors.go        # ClassifyError: transient / bad record / fatal
+        ├── writer.go        # Writer: batching, retries, quarantine
         └── *_test.go
 ```
 
@@ -179,11 +203,13 @@ git clone https://github.com/Nandhagopal2912/Gotell.git
 cd Gotell/gotel
 ```
 
-Run the demo CLI (it exits with code 1 if any run is neither `success` nor `recovered`):
+Run Gotell. It probes the configured targets until you press Ctrl+C, then shuts down cleanly and saves everything to `gotell.db`:
 
 ```bash
 go run .
 ```
+
+Options: `-duration 30s` stops after a fixed time, and `-db path/to/file.db` chooses the database file. The database files (`*.db`, `*.db-wal`, `*.db-shm`) are local data and are ignored by git.
 
 Run the tests with Go's race detector (Gotell is concurrent, so always use `-race`):
 
