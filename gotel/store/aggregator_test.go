@@ -86,7 +86,7 @@ func TestRunAggregatorStopsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		s.RunAggregator(ctx, time.Hour)
+		s.RunAggregator(ctx, time.Hour, DefaultRetention)
 		close(done)
 	}()
 

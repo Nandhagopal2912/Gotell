@@ -64,7 +64,7 @@ func main() {
 
 	// Keep the hourly summaries fresh while running, and catch up on any
 	// hours missed while Gotell was off (blueprint §11.1).
-	go db.RunAggregator(ctx, 5*time.Minute)
+	go db.RunAggregator(ctx, 5*time.Minute, store.DefaultRetention)
 
 	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.
 	go sched.Run(ctx)

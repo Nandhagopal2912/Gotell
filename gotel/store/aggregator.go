@@ -55,14 +55,24 @@ func (s *SQLite) CatchUp(ctx context.Context, now time.Time) error {
 }
 
 // RunAggregator calls CatchUp at once, then every interval, until ctx
-// ends. Errors are logged and retried on the next tick: a failed summary
-// can always be recomputed, because the raw runs are kept.
-func (s *SQLite) RunAggregator(ctx context.Context, interval time.Duration) {
+// ends; after each successful CatchUp it prunes raw runs older than
+// retention (0 keeps them forever). Errors are logged and retried on the
+// next tick: a failed summary can always be recomputed, because raw runs
+// are only pruned once their summaries are final.
+func (s *SQLite) RunAggregator(ctx context.Context, interval, retention time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if err := s.CatchUp(ctx, time.Now()); err != nil && ctx.Err() == nil {
-			log.Printf("analytics: %v", err)
+		if err := s.CatchUp(ctx, time.Now()); err != nil {
+			if ctx.Err() == nil {
+				log.Printf("analytics: %v", err)
+			}
+		} else if retention > 0 {
+			if n, err := s.Prune(ctx, time.Now(), retention); err != nil && ctx.Err() == nil {
+				log.Printf("retention: %v", err)
+			} else if n > 0 {
+				log.Printf("retention: deleted %d raw runs older than %v", n, retention)
+			}
 		}
 		select {
 		case <-ctx.Done():
