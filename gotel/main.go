@@ -137,6 +137,17 @@ func printUptime(db *store.SQLite, targets []scheduler.Target) {
 			fmt.Printf("    %s UTC (%s local)  %s  runs=%d ok=%d recovered=%d failed=%d cancelled=%d\n",
 				h.Hour.Format("2006-01-02 15:04"), h.Hour.Local().Format("15:04"), uptime,
 				h.ObservedRuns, h.SuccessRuns, h.RecoveredRuns, h.FailedRuns, h.CancelledRuns)
+			fmt.Printf("      ttfb p50=%s p95=%s p99=%s peak=%s  (%d samples, %d no response)\n",
+				showMs(h.P50TTFBms), showMs(h.P95TTFBms), showMs(h.P99TTFBms), showMs(h.PeakTTFBms),
+				h.LatencySamples, h.NoResponseAttempts)
 		}
 	}
+}
+
+// showMs formats an optional millisecond value: "-" when it was not measured.
+func showMs(ms *float64) string {
+	if ms == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.0fms", *ms)
 }
