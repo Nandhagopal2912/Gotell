@@ -62,6 +62,10 @@ func main() {
 	}
 	go heartbeat(ctx, db, session)
 
+	// Keep the hourly summaries fresh while running, and catch up on any
+	// hours missed while Gotell was off (blueprint §11.1).
+	go db.RunAggregator(ctx, 5*time.Minute)
+
 	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.
 	go sched.Run(ctx)
 	go telemetry.Forward(context.Background(), sched.Results(), tel)
