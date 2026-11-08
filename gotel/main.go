@@ -54,6 +54,14 @@ func main() {
 	tel := telemetry.New(64)
 	writer := store.NewWriter(db, store.DefaultWriterConfig())
 
+	// Record that Gotell is watching, so analytics can tell a target's
+	// downtime apart from time when Gotell was not running (§11.2).
+	session, err := db.StartSession(context.Background(), time.Now())
+	if err != nil {
+		log.Fatal(err)
+	}
+	go heartbeat(ctx, db, session)
+
 	// The pipeline: scheduler -> telemetry -> print -> writer -> SQLite.
 	go sched.Run(ctx)
 	go telemetry.Forward(context.Background(), sched.Results(), tel)
@@ -81,6 +89,10 @@ func main() {
 		}
 	}
 
+	if err := db.EndSession(context.Background(), session, time.Now()); err != nil {
+		log.Printf("ending session: %v", err)
+	}
+
 	st, ws := tel.Stats(), writer.Stats()
 	fmt.Printf("\nstopped. telemetry: sent=%d dropped=%d | writer: batches=%d written=%d errors=%d quarantined=%d lost=%d\n",
 		st.Sent, st.Dropped, ws.Batches, ws.Written, ws.WriteErrors, ws.Quarantined, ws.Lost)
@@ -88,6 +100,23 @@ func main() {
 		fmt.Printf("all runs in %s: %v\n", *dbPath, counts)
 	}
 	printUptime(db, targets)
+}
+
+// heartbeat updates the session every 30 seconds until ctx ends. If Gotell
+// crashes, the last heartbeat marks where its coverage stopped.
+func heartbeat(ctx context.Context, db *store.SQLite, session int64) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if err := db.Heartbeat(context.Background(), session, now); err != nil {
+				log.Printf("heartbeat: %v", err)
+			}
+		}
+	}
 }
 
 // printRun shows a run's outcome and every attempt, failed ones included.
@@ -140,6 +169,9 @@ func printUptime(db *store.SQLite, targets []scheduler.Target) {
 			fmt.Printf("      ttfb p50=%s p95=%s p99=%s peak=%s  (%d samples, %d no response)\n",
 				showMs(h.P50TTFBms), showMs(h.P95TTFBms), showMs(h.P99TTFBms), showMs(h.PeakTTFBms),
 				h.LatencySamples, h.NoResponseAttempts)
+			fmt.Printf("      coverage: expected=%d missing=%d  watched=%s paused=%s gotell-off=%s\n",
+				h.ExpectedRuns, h.MissingRuns, minutes(h.WatchedSeconds),
+				minutes(h.PausedSeconds), minutes(h.GapSeconds))
 		}
 	}
 }
@@ -150,4 +182,9 @@ func showMs(ms *float64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.0fms", *ms)
+}
+
+// minutes formats a number of seconds as whole minutes, e.g. "12m".
+func minutes(seconds float64) string {
+	return fmt.Sprintf("%.0fm", seconds/60)
 }

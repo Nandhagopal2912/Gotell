@@ -85,7 +85,7 @@ func Open(path string) (*SQLite, error) {
 	// keeps the write path serialized (blueprint §9.1).
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(schema + analyticsSchema); err != nil {
+	if _, err := db.Exec(schema + analyticsSchema + coverageSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("creating schema in %s: %w", path, err)
 	}

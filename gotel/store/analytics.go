@@ -27,9 +27,10 @@ CREATE TABLE IF NOT EXISTS historical_metrics (
 );
 `
 
-// latencyColumns were added in Phase 7 step 2. Databases created by step 1
-// already have the table without them, so migrate adds them if missing.
-var latencyColumns = []struct{ name, def string }{
+// addedColumns were added to historical_metrics after Phase 7 step 1.
+// Databases created earlier already have the table without them, so
+// migrate adds whichever are missing.
+var addedColumns = []struct{ name, def string }{
 	{"latency_samples", "INTEGER NOT NULL DEFAULT 0"},
 	{"no_response_attempts", "INTEGER NOT NULL DEFAULT 0"},
 	{"avg_ttfb_ms", "REAL"},
@@ -37,6 +38,12 @@ var latencyColumns = []struct{ name, def string }{
 	{"p95_ttfb_ms", "REAL"},
 	{"p99_ttfb_ms", "REAL"},
 	{"peak_ttfb_ms", "REAL"},
+	// Step 3: expected vs observed (blueprint §11.2).
+	{"expected_runs", "INTEGER NOT NULL DEFAULT 0"},
+	{"missing_runs", "INTEGER NOT NULL DEFAULT 0"},
+	{"watched_seconds", "REAL NOT NULL DEFAULT 0"},
+	{"paused_seconds", "REAL NOT NULL DEFAULT 0"},
+	{"gap_seconds", "REAL NOT NULL DEFAULT 0"},
 }
 
 // migrate adds columns that newer versions of Gotell need to tables that
@@ -60,7 +67,7 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
-	for _, c := range latencyColumns {
+	for _, c := range addedColumns {
 		if existing[c.name] {
 			continue
 		}
@@ -92,6 +99,16 @@ type HourSummary struct {
 	P95TTFBms          *float64
 	P99TTFBms          *float64
 	PeakTTFBms         *float64
+
+	// Coverage (blueprint §11.2). Seconds of this hour (up to now, and
+	// after the target was added) split three ways: Gotell was watching,
+	// the target was paused, or Gotell was not running (a monitoring gap,
+	// not the target's fault).
+	ExpectedRuns   int // watched seconds / interval
+	MissingRuns    int // expected runs with no recorded result; never below 0
+	WatchedSeconds float64
+	PausedSeconds  float64
+	GapSeconds     float64
 }
 
 // bucketExpr puts a run in the UTC hour it was scheduled in (started_at if
@@ -111,7 +128,15 @@ const bucketExpr = `substr(COALESCE(r.scheduled_at, r.started_at), 1, 13) || ':0
 //   - An hour with no up/down runs has uptime NULL, never 100% or 0%.
 //   - Latency uses every attempt that got a response; attempts without
 //     one are counted separately, never given an invented value.
-func (s *SQLite) AggregateHours(ctx context.Context, from, to time.Time) (err error) {
+//   - Expected runs only count time Gotell was running and the target was
+//     not paused; missing runs are shown as missing, never as success.
+func (s *SQLite) AggregateHours(ctx context.Context, from, to time.Time) error {
+	return s.aggregateHours(ctx, from, to, time.Now())
+}
+
+// aggregateHours is AggregateHours with "now" passed in, so tests can
+// control which part of the current hour has happened.
+func (s *SQLite) aggregateHours(ctx context.Context, from, to, now time.Time) (err error) {
 	from = from.UTC().Truncate(time.Hour)
 	to = to.UTC().Truncate(time.Hour)
 	if !to.After(from) {
@@ -132,6 +157,9 @@ func (s *SQLite) AggregateHours(ctx context.Context, from, to time.Time) (err er
 		return err
 	}
 	if err := updateLatency(ctx, tx, from, to); err != nil {
+		return err
+	}
+	if err := updateCoverage(ctx, tx, from, to, now.UTC()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -280,7 +308,8 @@ func (s *SQLite) HourlySummaries(ctx context.Context, targetID int, from, to tim
 		SELECT hourly_bucket, observed_runs, success_runs, recovered_runs,
 		       failed_runs, cancelled_runs, uptime_pct,
 		       latency_samples, no_response_attempts,
-		       avg_ttfb_ms, p50_ttfb_ms, p95_ttfb_ms, p99_ttfb_ms, peak_ttfb_ms
+		       avg_ttfb_ms, p50_ttfb_ms, p95_ttfb_ms, p99_ttfb_ms, peak_ttfb_ms,
+		       expected_runs, missing_runs, watched_seconds, paused_seconds, gap_seconds
 		FROM historical_metrics
 		WHERE target_id = ? AND hourly_bucket >= ? AND hourly_bucket < ?
 		ORDER BY hourly_bucket`,
@@ -298,7 +327,8 @@ func (s *SQLite) HourlySummaries(ctx context.Context, targetID int, from, to tim
 		if err := rows.Scan(&bucket, &h.ObservedRuns, &h.SuccessRuns, &h.RecoveredRuns,
 			&h.FailedRuns, &h.CancelledRuns, &uptime,
 			&h.LatencySamples, &h.NoResponseAttempts,
-			&avg, &p50, &p95, &p99, &peak); err != nil {
+			&avg, &p50, &p95, &p99, &peak,
+			&h.ExpectedRuns, &h.MissingRuns, &h.WatchedSeconds, &h.PausedSeconds, &h.GapSeconds); err != nil {
 			return nil, err
 		}
 		if h.Hour, err = time.Parse(timeLayout, bucket); err != nil {
