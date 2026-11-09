@@ -1,0 +1,7 @@
+# Local data and build output never go into the image
+*.db
+*.db-wal
+*.db-shm
+*.exe
+*.test
+*.out

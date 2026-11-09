@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"gotel/api"
@@ -30,7 +31,13 @@ func main() {
 	allowPrivate := flag.Bool("allow-private", false, "allow targets on private or internal addresses (localhost, 192.168.x.x, ...); off by default for safety")
 	maxTargets := flag.Int("max-targets", api.DefaultMaxTargets, "most targets Gotell will watch")
 	maxPerHost := flag.Int("max-targets-per-host", api.DefaultMaxPerHost, "most targets on the same website, so one site is not overloaded")
+
+	healthcheck := flag.Bool("healthcheck", false, "check that a running Gotell answers on - listen , then exit (used by the container)")
 	flag.Parse()
+
+	if *healthcheck {
+		os.Exit(checkHealth(*listen))
+	}
 
 	// Open the database first: if it cannot be written, do not start probing.
 	db, err := store.Open(*dbPath)
@@ -53,7 +60,7 @@ func main() {
 	}
 
 	// Stop on Ctrl+C, or after -duration if it was given.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *duration > 0 {
 		var cancel context.CancelFunc
@@ -222,6 +229,34 @@ func heartbeat(ctx context.Context, db *store.SQLite, session int64) {
 			}
 		}
 	}
+}
+
+// checkHealth asks a running Gotell for /api/heatlh and returns the exit
+// code: 0 if it answered 200 OK, 1 otherwise. The container image has no curl or shell , so gotell checks itself.
+func checkHealth(listen string) int {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1" // listen on every address
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	res, err := client.Get("http://" + net.JoinHostPort(host, port) + "/api/health")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck : status", res.Status)
+		return 1
+	}
+	return 0
 }
 
 // printRun shows a run's outcome and every attempt, failed ones included.

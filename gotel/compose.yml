@@ -1,0 +1,15 @@
+services:
+  gotell:
+    build: .
+    image: gotell:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - gotell-data:/data
+    environment:
+      - GOTELL_TOKEN=${GOTELL_TOKEN:-}
+    restart: unless-stopped
+
+volumes:
+  gotell-data:
+    name: gotell-data # use exactly this volume (no "gotel_" project prefix)

@@ -11,6 +11,7 @@ docs/
 *.db-wal
 *.db-shm
 
+
 # Editor and OS files
 .vscode/
 .idea/
