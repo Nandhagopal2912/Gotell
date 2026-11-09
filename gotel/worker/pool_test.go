@@ -95,3 +95,25 @@ func TestPoolEveryJobGetsItsResult(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolStatsShowsLoad(t *testing.T) {
+	fake := &slowProber{delay: 100 * time.Millisecond}
+	pool := NewPool(fake, 2, 8)
+	if st := pool.Stats(); st != (PoolStats{Workers: 2, QueueCapacity: 8}) {
+		t.Errorf("idle pool stats = %+v", st)
+	}
+	for i := 0; i < 5; i++ {
+		pool.Submit(Job{TargetID: i, URL: "http://example.test/", Timeout: time.Second})
+	}
+	time.Sleep(50 * time.Millisecond) // both workers are inside a 100 ms probe
+	st := pool.Stats()
+	if st.Busy != 2 || st.QueueDepth != 3 {
+		t.Errorf("loaded pool stats = %+v, want 2 busy and 3 queued", st)
+	}
+	pool.Stop()
+	for range pool.Results() {
+	}
+	if st := pool.Stats(); st.Busy != 0 || st.QueueDepth != 0 {
+		t.Errorf("after Stop: %+v, want nothing busy or queued", st)
+	}
+}

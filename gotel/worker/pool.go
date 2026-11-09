@@ -5,6 +5,7 @@ package worker
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gotel/probe"
@@ -43,6 +44,8 @@ type Pool struct {
 	jobs    chan Job
 	results chan JobResult
 	wg      sync.WaitGroup
+	workers int
+	busy    atomic.Int64 // workers running a job right now
 
 	// ctx is the parent of every probe's context. Cancelling it (Shutdown)
 	// stops in-flight probes and makes workers skip queued jobs.
@@ -66,6 +69,7 @@ func NewPoolWithPolicies(p Prober, workers, queueSize int, rp runner.RetryPolicy
 		status:  sp,
 		jobs:    make(chan Job, queueSize),
 		results: make(chan JobResult, queueSize),
+		workers: workers,
 		ctx:     ctx,
 		cancel:  cancel,
 	}
@@ -90,9 +94,11 @@ func (pl *Pool) work() {
 			continue
 		}
 
+		pl.busy.Add(1)
 		ctx, cancel := context.WithTimeout(pl.ctx, job.Timeout)
 		run := runner.Do(ctx, pl.prober, job.URL, pl.retry, pl.status)
 		cancel()
+		pl.busy.Add(-1)
 
 		// runner.Do knows the attempts; the scheduling facts come from the job.
 		run.TargetID = job.TargetID
@@ -102,6 +108,25 @@ func (pl *Pool) work() {
 		}
 
 		pl.results <- JobResult{Job: job, Run: run}
+	}
+}
+
+// PoolStats is a snapshot of how loaded the pool is (blueprint §13:
+// worker utilization and job queue pressure).
+type PoolStats struct {
+	Workers       int   `json:"workers"`
+	Busy          int64 `json:"busy"`
+	QueueDepth    int   `json:"queue_depth"`
+	QueueCapacity int   `json:"queue_capacity"`
+}
+
+// Stats returns the pool's current load. Safe to call from any goroutine.
+func (pl *Pool) Stats() PoolStats {
+	return PoolStats{
+		Workers:       pl.workers,
+		Busy:          pl.busy.Load(),
+		QueueDepth:    len(pl.jobs),
+		QueueCapacity: cap(pl.jobs),
 	}
 }
 

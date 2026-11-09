@@ -1,235 +1,241 @@
 # Gotell
 
-A lightweight Go engine for black-box HTTP/HTTPS availability and latency monitoring, built for independent developers, small applications and self-hosted services.
+A lightweight, self-hosted Go engine for black-box HTTP/HTTPS availability and latency monitoring, built for independent developers, small applications and hobby-hosted services.
 
-Gotell probes your endpoints **from the outside**, the way a user would. It records whether they answered, how long each stage took (DNS, TCP connect, TLS handshake, time to first byte, total), and keeps an honest history of availability and latency.
+Gotell checks your endpoints **from the outside**, the way a user would. It records whether they answered, how long each stage took (DNS, TCP connect, TLS handshake, time to first byte, total), keeps every retry, opens incidents when a target is really down, and shows an honest history on a local dashboard.
 
-> **Status:** early development. Phases 1–6 of 10 are complete: Gotell can probe, trace, schedule, retry and classify, and saves every run and attempt to SQLite. Analytics (uptime %, latency percentiles), alerts and the dashboard are not built yet. It is not production-ready, and no capacity or performance claims are made until they are backed by benchmarks.
+> **Status:** v1. All 10 phases of the design are complete. Gotell runs as **one process and one SQLite file on your own machine** (or in Docker). Capacity numbers below come from repeatable load tests, see [BENCHMARKS.md](BENCHMARKS.md); anything not measured there is not claimed.
+
+<!-- Add a screenshot: save it as assets/dashboard.png and uncomment the next line. -->
+<!-- ![Gotell dashboard](assets/dashboard.png) -->
 
 ---
 
 ## Who it's for
 
-Indie developers and small teams running apps on **free, hobby or serverless hosting** (Render, Railway, Fly.io, serverless functions and similar), where the most common question is:
+Indie developers and small teams running apps on **free, hobby or serverless hosting** (Render, Railway, Fly.io and similar), where the common question is:
 
 > *Is my app down, slow, or just waking up from a cold start?*
 
-Most uptime tools answer only "up" or "down". Gotell aims to tell you **which one**, and **where the time went**.
+Most uptime tools answer only "up" or "down". Gotell shows **what happened on every attempt** and **where the time went**.
 
 ## Why Gotell
 
-A basic URL pinger is easy to write. A monitor whose numbers you can trust is not. Gotell focuses on the details that make monitoring data honest:
+A URL pinger is easy to write. A monitor whose numbers you can trust is not. Gotell focuses on the details that make monitoring data honest:
 
-- **Honest uptime.** Missing measurements are never counted as success, and gaps in monitoring coverage are shown separately from the target's own availability. A "99.9%" from Gotell means 99.9% of expected checks actually succeeded.
-- **Where the time went.** Each probe is split into DNS lookup, TCP connect, TLS handshake, time to first byte and total time, so a slow response points to a stage, not just a number.
-- **Suspected cold starts.** Slow responses after idle periods are flagged as *suspected* cold starts, with the evidence kept, instead of being reported as outages or silently hidden.
-- **Every attempt kept.** "Failed once, recovered on retry" is recorded differently from "healthy the whole time", so flapping services are visible.
-- **"Not measured" is never 0 ms.** Stages that didn't happen (for example on a reused connection) are stored as missing, not as zero.
-- **Simple to self-host.** One Go binary and one SQLite file. Your monitoring data stays with you.
+- **Honest uptime.** Missing checks are never counted as success. Time when Gotell was off, or a target was paused, is shown separately from the target's own availability.
+- **Where the time went.** Each check is split into DNS, TCP connect, TLS handshake, time to first byte and total.
+- **"Not measured" is never 0 ms.** Stages that did not happen (a reused connection, an IP address with no DNS) are stored as missing.
+- **Every attempt kept.** "Failed once, recovered on retry" is recorded differently from "healthy the whole time", so flapping and slow wake-ups stay visible.
+- **No silent data loss.** If a result cannot be saved, it is retried, quarantined or counted as lost, and reported.
+- **Safe by default.** User-supplied URLs cannot reach your private network (SSRF protection), changes need an admin token, and every queue and limit is bounded.
 
 ---
 
-## Goals
+## Quick start
 
-- Monitor user-configured **HTTP and HTTPS** endpoints from outside the target application.
-- Measure availability and request timing: DNS, TCP connect, TLS handshake, TTFB and total duration, where observable.
-- Probe many targets with **bounded, controlled concurrency** and configurable intervals.
-- **Keep transient failures and every retry attempt**, not just the final outcome.
-- Persist results safely with **SQLite (WAL mode)** and batched transactions.
-- Produce hourly availability and latency summaries with **explicit missing-data semantics**.
-- Support maintenance mode, adaptive scheduling, time-window-aware notifications and graceful shutdown.
-- Protect the monitoring service itself from unsafe user-supplied destinations (**SSRF protection**).
+### With Docker (recommended)
 
-## Non-goals (first release)
+Requires Docker with Compose.
 
-- A globally distributed, multi-region probe network.
-- Full application performance monitoring (APM) or distributed tracing.
-- Attributing slow responses to specific components inside the target server.
-- Unlimited targets or unbounded request concurrency.
-- Any claim of production-grade availability before load, failure-injection and recovery testing.
+```bash
+git clone https://github.com/Nandhagopal2912/Gotell.git
+cd Gotell/gotel
+docker compose up -d --build
+docker compose logs
+```
 
-## Design principles
+Open **http://127.0.0.1:8080**. The logs show the **admin token**: paste it into the dashboard once to add, pause or delete targets (the browser remembers it). Reading the dashboard needs no token.
 
-| Principle | What it means in Gotell |
-|---|---|
-| Facts before interpretation | The probe records what happened; a separate policy/classifier decides what it means. |
-| Bounded resource use | Workers, queues, timeouts, response sizes and request rates all have limits. |
-| No silent data loss | Database errors are surfaced; failed batches are retried, never quietly discarded. |
-| Explicit measurement semantics | "Not measured" is never stored as 0 ms. Missing data is never counted as success. |
-| Secure by default | User-supplied URLs are treated as untrusted network destinations. |
-| Measure before optimizing | Concurrency and capacity numbers are hypotheses until benchmarked. |
+- Data (targets, history, the token) lives in the Docker volume **`gotell-data`**, so it survives rebuilds and `docker compose down`. `docker compose down -v` **deletes it**.
+- The port is published on `127.0.0.1` only, so other machines on your network cannot reach the dashboard.
+- To choose your own token: `GOTELL_TOKEN=yoursecret docker compose up -d` (PowerShell: `$env:GOTELL_TOKEN="yoursecret"; docker compose up -d`).
+- The image is about 14 MB: a static Go binary on distroless, running as a non-root user, with a built-in health check (`docker compose ps` shows `healthy`).
+
+### With Go
+
+Requires **Go 1.27+**.
+
+```bash
+cd Gotell/gotel
+go run .
+```
+
+Then open http://127.0.0.1:8080 and add a target. Stop with Ctrl+C; Gotell shuts down cleanly and prints a summary.
+
+### Options
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-db` | `gotell.db` | SQLite database file |
+| `-listen` | `127.0.0.1:8080` | dashboard and API address (localhost only by default) |
+| `-token` | `$GOTELL_TOKEN`, else generated and saved in the database | admin token for changes |
+| `-workers` | `16` | probes that may run at the same time (see [BENCHMARKS.md](BENCHMARKS.md) to size it) |
+| `-max-targets` | `200` | most targets Gotell will watch |
+| `-max-targets-per-host` | `20` | most targets on one website, so one site is not overloaded |
+| `-allow-private` | off | allow targets on private/internal addresses (localhost, 192.168.x.x, ...) |
+| `-duration` | `0` (forever) | stop after this long |
+
+### Backup
+
+The whole state is one SQLite file. With Docker, copy it out of the volume while Gotell is stopped:
+
+```bash
+docker compose stop
+docker run --rm -v gotell-data:/data -v "${PWD}:/backup" busybox cp /data/gotell.db /backup/gotell-backup.db
+docker compose start
+```
+
+Without Docker, stop Gotell and copy `gotell.db` (if `gotell.db-wal` exists, copy it too).
+
+---
+
+## What Gotell does
+
+**Probing** (Phases 1–2)
+- One shared HTTP client with separate timeouts: connect 5 s, TLS handshake 5 s, response headers 10 s, and a 30 s deadline for a whole check including retries.
+- Response bodies are read up to 1 MiB and always closed. Redirects are **not followed**; the 3xx is the result.
+- `httptrace` timings for DNS, TCP connect, TLS, time to first byte, total, and whether the connection was reused.
+
+**Scheduling, retries and classification** (Phases 3–4)
+- One scheduler goroutine and a fixed pool of workers with a bounded job queue. A target never has two checks running at once. Random jitter spreads checks out; scheduler lag is measured.
+- Each check is a **run** of one or more **attempts**. Failures are classified: `dns`, `connect`, `tls`, `timeout`, `http_4xx`, `http_5xx`, `http_other`, `body_read`, `blocked`, `cancelled`, `unknown`.
+- Retries with doubling waits for `dns`, `connect`, `timeout`, `http_5xx` and `body_read` only. A retry is never started if it could not finish before the deadline.
+- Outcomes: `success`, `recovered` (failed, then healthy), `failed`, `cancelled`.
+
+**Telemetry and storage** (Phases 5–6)
+- A bounded channel between probing and storage. When it is full, senders wait (backpressure); nothing is dropped silently.
+- A single writer saves runs and attempts to SQLite (WAL mode, busy timeout, foreign keys) in batches. Temporary errors are retried, a bad record is quarantined alone, fatal errors stop Gotell cleanly; anything not saved is counted and logged.
+
+**Analytics and retention** (Phase 7)
+- Hourly summaries per target (UTC hours): run counts, uptime, time-to-first-byte p50/p95/p99 and peak.
+- Recomputing an hour replaces it (idempotent), and hours missed while Gotell was off are caught up at start-up.
+- Raw runs are kept for 14 days; hourly summaries are kept.
+
+**Incidents and notifications** (Phase 8)
+- A target is **DOWN** after 3 failed runs in a row and **RECOVERED** at the first healthy run. Cancelled runs are ignored. Open incidents are reloaded after a restart, so nothing alerts twice.
+- Quiet hours 23:00–07:00 (local time) hold notifications, unless a target stays down for 30 minutes. Held notifications are recorded and summarised in the morning, never dropped.
+- Notifications are printed to the console and recorded in the database.
+
+**API and dashboard** (Phase 9)
+- A JSON API and an embedded dashboard (no external scripts; strict Content-Security-Policy).
+- The dashboard shows each target's status, uptime, latency by stage, hour-by-hour bars, recent runs with every attempt, incidents, and plain-language explanations.
+- Add, pause, resume and delete targets from the dashboard (admin token required).
+
+**Hardening** (Phase 10)
+- **SSRF protection:** targets on loopback, private, link-local, cloud-metadata and other internal addresses are refused when added **and** checked again on the real IP at connect time, which also covers DNS rebinding. Opt out with `-allow-private` for your own LAN.
+- **Limits:** 200 targets in total and 20 per website by default; check intervals from 10 s to 24 h; request size and header limits; server read/write/idle timeouts.
+- **Container:** multi-stage Docker build, distroless non-root image, health check, graceful stop on `SIGTERM`, Compose file with a named volume.
+- **Self-monitoring:** `GET /api/stats` reports workers busy, queue depths, queue-full skips, memory, goroutines and data-loss counters.
+- **Load tests:** a repeatable harness (`go run ./loadtest`) and the results in [BENCHMARKS.md](BENCHMARKS.md). On a laptop, 16 workers kept up with 1,000 targets checked every 60 s (fake site, ~0.35 s per check) using about 1% of one CPU core and 23 MiB of memory, with no data lost. With 4 workers the same load fell behind, but still lost nothing, so the default is now 16.
+
+### How uptime is calculated
+
+For each target and UTC hour:
+
+```
+uptime % = (success + recovered runs) / (success + recovered + failed runs) × 100
+```
+
+- **Cancelled** runs (stopped by Gotell's own shutdown) count as neither up nor down.
+- An hour with no up/down runs has **no** uptime (shown as `n/a`), never 100% or 0%.
+- A run belongs to the hour it was **scheduled** in.
+- **Maintenance:** while a target is paused, no checks run and that time is excluded. Time when Gotell itself was not running is shown separately as a coverage gap, never as downtime or uptime.
+
+### API
+
+| Method and path | Token | Purpose |
+|---|---|---|
+| `GET /api/health` | | Gotell is running |
+| `GET /api/stats` | | Gotell's own load and data-loss counters |
+| `GET /api/targets` | | all targets with status and recent hours |
+| `GET /api/targets/{id}` | | one target with its hourly history |
+| `GET /api/targets/{id}/runs` | | recent runs with every attempt |
+| `GET /api/incidents` | | recent incidents |
+| `POST /api/targets` | ✓ | add `{"url": "https://...", "interval_seconds": 60}` |
+| `DELETE /api/targets/{id}` | ✓ | delete a target (its history is kept) |
+| `POST /api/targets/{id}/pause` | ✓ | maintenance mode on |
+| `POST /api/targets/{id}/resume` | ✓ | maintenance mode off |
+
+Changes need the header `Authorization: Bearer <token>`.
+
+---
 
 ## Architecture
 
-`[built]` marks the parts that exist today; the rest is planned.
-
 ```
-Target configuration
-        |
-        v
-Target registry + URL / network policy validation
-        |
-        v
-Central scheduler ---> bounded due-job queue                      [built]
-        |
-        v
-Bounded worker pool ---> HTTP probe executor (net/http + httptrace) [built]
-        |
-        v
-Retries + classification (failure types)                           [built]
-(suspected cold starts: planned)
-        |
-        v
-Bounded telemetry channel (backpressure, no silent drops)          [built]
-        |
-        v
-Single SQLite batch writer (WAL)                                   [built]
-        |
-        +--> Raw probe runs and attempts                           [built]
-        +--> Hourly aggregates
-                    |
-                    v
-        Incident state ---> Notification dispatcher
+Dashboard / JSON API ──(token)──> target store (SQLite) ──> SSRF + limit checks
+                                        │
+                                        v
+Central scheduler ──> bounded job queue ──> fixed worker pool ──> HTTP probe (httptrace)
+                                                  │                 SSRF check at connect time
+                                                  v
+                                   retries + failure classification
+                                                  │
+                                                  v
+                             bounded telemetry channel (backpressure)
+                                                  │
+                                  incident detector ──> notification dispatcher (quiet hours)
+                                                  │
+                                                  v
+                           single SQLite batch writer (WAL) ──> runs + attempts
+                                                                    │
+                                                    hourly aggregator + 14-day retention
 ```
 
-Gotell runs as a **single instance** first, designed so that distributed probe agents remain possible later.
-
-## Roadmap
-
-| Phase | Deliverable | Status |
-|---|---|---|
-| 1. Probe foundation | Single-target HTTP probe with bounded timeouts and a basic outcome | ✅ Done |
-| 2. Trace instrumentation | DNS, TCP, TLS, TTFB, total time, connection reuse | ✅ Done |
-| 3. Scheduler and worker pool | Central scheduler, bounded queue, fixed worker capacity | ✅ Done |
-| 4. Retry and classification | Run/attempt model, configurable retry policy | ✅ Done |
-| 5. Telemetry channel | Bounded channel with backpressure metrics | ✅ Done |
-| 6. SQLite writer | WAL setup and transactional batch writer | ✅ Done |
-| 7. Analytics and retention | Idempotent hourly rollups, raw-data pruning | ⏳ Next |
-| 8. Incidents and notifications | Incident state, deduplication, timezone-aware windows | |
-| 9. API and dashboard | Target management and historical views | |
-| 10. Production hardening | Security controls, resource limits, load tests | |
-
-### What works today
-
-**Phase 1: probe foundation**
-- `Prober` with one shared `http.Client`, so connections can be reused.
-- Separate timeouts for DNS + TCP connect, TLS handshake and response headers, plus an overall deadline via `context`.
-- Response bodies are always closed and reads are capped at 1 MiB.
-- Redirects are **not followed** until redirect destinations can be validated; the 3xx response is returned as the result.
-- A status policy (default: any `2xx` is healthy), kept separate from the probe itself.
-
-**Phase 2: trace instrumentation**
-- `httptrace` timings for DNS lookup, TCP connect, TLS handshake and time to first byte, plus total time and whether the connection was reused.
-- Stages that did not happen (an IP-literal URL, a reused connection, plain `http://`) are `nil` ("not measured"), never 0 ms.
-- DNS failures can be told apart from connection failures.
-
-**Phase 3: scheduler and worker pool**
-- A fixed number of worker goroutines and a bounded job queue; a full queue is refused and counted, not hidden.
-- A single-goroutine scheduler: no overlapping runs of the same target, pause/resume (maintenance mode), random jitter, and scheduler-lag measurement.
-- Graceful shutdown: running probes are cancelled, queued jobs are skipped (not recorded as failures), and the results channel closes once everything has stopped.
-- Race-free: trace hooks are guarded by a mutex, and every test passes under `go test -race`.
-
-**Phase 4: retries and classification**
-- Each scheduled check is a **run** of one or more **attempts**; every attempt is kept.
-- Failures are classified as `dns`, `connect`, `tls`, `timeout`, `http_4xx`, `http_5xx`, `http_other`, `body_read`, `cancelled` or `unknown`.
-- Retries with doubling waits for `dns`, `connect`, `timeout`, `http_5xx` and `body_read`; no retries for `tls`, 4xx, cancellations or unknown errors. A retry is never started if it could not finish before the run's deadline.
-- Run outcomes: `success`, `recovered` (failed, then healthy), `failed`, `cancelled`.
-
-**Phase 5: telemetry channel**
-- A bounded buffer between the engine and storage. When it is full, senders wait (backpressure) instead of records being dropped.
-- Measured: buffer depth and capacity, records sent, time senders waited (total and maximum), and dropped records, which must stay at 0. A record can only be dropped if shutdown interrupts a wait, and then it is counted and reported, never silent.
-
-**Phase 6: SQLite writer**
-- Every run and every attempt is saved to one SQLite file (`gotell.db` by default), using the pure-Go `modernc.org/sqlite` driver, so no C compiler is needed to build Gotell.
-- WAL mode, a busy timeout and foreign keys are set on every connection; one writer goroutine saves runs in batches of up to 100, or every 3 seconds, one transaction per batch.
-- Timestamps are stored as fixed-width UTC text, so they sort in time order; stages that were not measured are stored as `NULL`, never 0.
-- Failed writes are classified: temporary errors (locked, busy, disk full, I/O) are retried with capped backoff and never discarded; a record that breaks a schema rule is quarantined on its own, so it cannot block the rest; fatal errors (read-only, corrupt) stop Gotell cleanly. Anything that could not be saved is counted and logged.
-- Configured targets are saved at start-up and updated on restart, never duplicated.
-
-Example output of `go run .`, catching a real cold start on a free-tier host:
-
-```
-recovered https://startly-api.onrender.com/health  (2 attempt(s), 13.659s)
-  #1 timeout    status=0 ttfb=- dns=39ms tcp=12ms tls=75ms total=10.001s
-  #2 none       status=200 ttfb=3.156s dns=62ms tcp=10ms tls=16ms total=3.157s
-```
-
-When it stops, Gotell reports what it saved, for example:
-
-```
-stopped. telemetry: sent=5 dropped=0 | writer: batches=4 written=5 errors=0 quarantined=0 lost=0
-all runs in gotell.db: map[cancelled:2 failed:3]
-```
+Everything runs in one process. One goroutine owns each piece of shared state (scheduler, writer), and every queue between them is bounded.
 
 ## Project layout
 
 ```
 .
 ├── README.md
+├── BENCHMARKS.md        # load-test results
+├── RELEASE.md           # release checklist (blueprint §19)
 └── gotel/
-    ├── go.mod, go.sum
-    ├── main.go              # runs the engine, prints every run, saves to SQLite
-    ├── probe/               # one HTTP attempt: timeouts, tracing, status policy
-    │   ├── probe.go         # Prober, Config, Result
-    │   ├── policy.go        # StatusPolicy, Default2xx
-    │   └── *_test.go
-    ├── runner/              # one scheduled check: attempts, retries, classification
-    │   ├── types.go         # Run, Attempt, FailureClass, Outcome, RetryPolicy
-    │   ├── classify.go      # Classify, Retryable
-    │   ├── runner.go        # Do: the retry loop
-    │   └── *_test.go
-    ├── worker/              # bounded worker pool
-    │   ├── pool.go          # Pool, Job, JobResult, Shutdown
-    │   └── *_test.go
-    ├── scheduler/           # decides which targets are due
-    │   ├── scheduler.go     # Scheduler, Target, pause/resume, jitter, lag
-    │   └── *_test.go
-    ├── telemetry/           # bounded buffer between the engine and storage
-    │   ├── telemetry.go     # Telemetry, Send, Stats, Forward
-    │   └── *_test.go
-    └── store/               # SQLite storage
-        ├── sqlite.go        # schema, Open, UpsertTargets, WriteBatch
-        ├── errors.go        # ClassifyError: transient / bad record / fatal
-        ├── writer.go        # Writer: batching, retries, quarantine
-        └── *_test.go
+    ├── main.go          # wires the engine, API and dashboard together
+    ├── Dockerfile, compose.yml, .dockerignore
+    ├── probe/           # one HTTP attempt: timeouts, tracing, status policy
+    ├── runner/          # one check: attempts, retries, classification
+    ├── worker/          # bounded worker pool
+    ├── scheduler/       # decides which targets are due; pause/resume/add/remove
+    ├── telemetry/       # bounded channel between probing and storage
+    ├── store/           # SQLite: schema, writer, analytics, retention, incidents, targets
+    ├── incident/        # incident detection and notification dispatch
+    ├── netguard/        # which addresses are internal (SSRF)
+    ├── api/             # JSON API, token check, validation, limits
+    ├── web/             # embedded dashboard (HTML, CSS, JS)
+    └── loadtest/        # load-test harness
 ```
 
-## Getting started
-
-Requires **Go 1.27+**.
-
-```bash
-git clone https://github.com/Nandhagopal2912/Gotell.git
-cd Gotell/gotel
-```
-
-Run Gotell. It probes the configured targets until you press Ctrl+C, then shuts down cleanly and saves everything to `gotell.db`:
-
-```bash
-go run .
-```
-
-Options: `-duration 30s` stops after a fixed time, and `-db path/to/file.db` chooses the database file. The database files (`*.db`, `*.db-wal`, `*.db-shm`) are local data and are ignored by git.
-
-Run the tests with Go's race detector (Gotell is concurrent, so always use `-race`):
+## Development
 
 ```bash
 go test -race ./...
-```
-
-The race detector needs cgo and a 64-bit C compiler. On Windows, one way is MSYS2's UCRT GCC: install `mingw-w64-ucrt-x86_64-gcc`, add `C:\msys64\ucrt64\bin` to your `PATH`, and point Go at it with `go env -w CC=C:\msys64\ucrt64\bin\gcc.exe`.
-
-Before committing, check formatting and common mistakes:
-
-```bash
 gofmt -l .
 go vet ./...
 ```
 
-## Security note
+The race detector needs cgo and a 64-bit C compiler. On Windows, one way is MSYS2's UCRT GCC: install `mingw-w64-ucrt-x86_64-gcc`, add `C:\msys64\ucrt64\bin` to your `PATH`, and run `go env -w CC=C:\msys64\ucrt64\bin\gcc.exe`.
 
-A monitoring service that fetches user-supplied URLs can be abused to reach internal systems (SSRF). Full destination validation (blocking private, loopback, link-local and cloud-metadata addresses, revalidating redirects, and guarding against DNS rebinding) is a **release-blocking requirement** and is planned before Gotell is exposed publicly. Until then, run it only against endpoints you trust.
+Load test (see [BENCHMARKS.md](BENCHMARKS.md)):
+
+```bash
+go build -o gotell.exe .
+go run ./loadtest -gotell ./gotell.exe -targets 100 -duration 10m
+```
+
+## Not in v1
+
+Kept out on purpose, so v1 stays small and honest:
+
+- Multi-region or distributed probing; Gotell checks from one machine.
+- Following redirects (needs per-hop destination checks first).
+- Automatic "suspected cold start" labels. Slow first attempts and timeout-then-recovered runs are recorded with all their timings, but not yet labelled.
+- Email, Slack or webhook notifications (notifications are printed and recorded).
+- Multiple users; there is one admin token.
+- Hosting Gotell publicly. It is designed to run on your own machine; keep the dashboard on localhost.
 
 ## About this project
 
-Gotell is also a learning project: it is being built step by step in Go, following a written architecture blueprint (v4.1) and its phased roadmap, with tests required at each phase.
+Gotell is a learning project, built step by step in Go from a written architecture blueprint (v4.1) and its 10-phase roadmap, with tests at every phase.

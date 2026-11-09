@@ -59,7 +59,14 @@ type Server struct {
 	addMu         sync.Mutex
 	maxTargets    int // in total
 	maxPerHostTgt int // on the same host name
+
+	stats func() any // the engine's own health numbers; nil: not available
 }
+
+// SetStats sets the function that GET /api/stats reports (blueprint §13:
+// the engine monitors its own health). It must be safe to call from any
+// goroutine and return something that encodes to JSON.
+func (s *Server) SetStats(f func() any) { s.stats = f }
 
 // New creates a Server reading from s. Changes go to ctl and require
 // token; with a nil ctl or an empty token, the API is read-only.
@@ -97,6 +104,7 @@ func (s *Server) SetAllowPrivate(allow bool) { s.allowPrivate = allow }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/stats", s.engineStats)
 	mux.HandleFunc("GET /api/targets", s.listTargets)
 	mux.HandleFunc("GET /api/targets/{id}", s.getTarget)
 	mux.HandleFunc("GET /api/targets/{id}/runs", s.listRuns)
@@ -193,6 +201,16 @@ type incidentJSON struct {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "time": s.now().UTC()})
+}
+
+// engineStats reports Gotell's own load: workers, queues, memory, data
+// loss. It contains no URLs or secrets, so it needs no token.
+func (s *Server) engineStats(w http.ResponseWriter, r *http.Request) {
+	if s.stats == nil {
+		writeError(w, http.StatusNotFound, "stats are not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.stats())
 }
 
 func (s *Server) listTargets(w http.ResponseWriter, r *http.Request) {

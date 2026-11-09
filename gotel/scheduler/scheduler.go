@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"sync/atomic"
 	"time"
 
 	"gotel/worker"
@@ -58,8 +59,14 @@ type Scheduler struct {
 	entries  map[int]*entry
 	results  chan worker.JobResult
 	commands chan command
-	skipped  int // dispatches refused because the job queue was full
+	skipped  atomic.Int64 // dispatches refused because the job queue was full
 }
+
+// Skipped returns how many times a due target could not be dispatched
+// because the job queue was full (it is retried on the next tick). A
+// growing number means the workers cannot keep up. Safe to call from any
+// goroutine.
+func (s *Scheduler) Skipped() int64 { return s.skipped.Load() }
 
 // New creates a Scheduler that checks for due targets every tick.
 // Each next run is delayed by a random amount in [0, jitter) so targets
@@ -210,7 +217,7 @@ func (s *Scheduler) dispatchDue(now time.Time) {
 			ScheduledAt: e.nextDue,
 		}
 		if !s.pool.TrySubmit(job) {
-			s.skipped++ // queue full: try again on the next tick
+			s.skipped.Add(1) // queue full: try again on the next tick
 			continue
 		}
 		e.inFlight = true

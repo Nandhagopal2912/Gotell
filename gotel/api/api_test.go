@@ -205,3 +205,16 @@ func TestStatusIgnoresCancelledRuns(t *testing.T) {
 		t.Errorf("target 2 status = %q, want failing (the cancelled run says nothing)", targets[1].Status)
 	}
 }
+
+func TestStats(t *testing.T) {
+	db, h := fixture(t)
+	get(t, h, "/api/stats", http.StatusNotFound, nil) // not set: not available
+
+	s := New(db, nil, "")
+	s.SetStats(func() any { return map[string]int{"goroutines": 7} })
+	var body map[string]int
+	get(t, s.Handler(), "/api/stats", http.StatusOK, &body)
+	if body["goroutines"] != 7 {
+		t.Errorf("body = %v", body)
+	}
+}

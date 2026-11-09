@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -32,11 +33,15 @@ func main() {
 	maxTargets := flag.Int("max-targets", api.DefaultMaxTargets, "most targets Gotell will watch")
 	maxPerHost := flag.Int("max-targets-per-host", api.DefaultMaxPerHost, "most targets on the same website, so one site is not overloaded")
 
-	healthcheck := flag.Bool("healthcheck", false, "check that a running Gotell answers on - listen , then exit (used by the container)")
+	workers := flag.Int("workers", 16, "probes that may run at the same time (the job queue holds 4 per worker); see BENCHMARKS.md")
+	healthcheck := flag.Bool("healthcheck", false, "check that a running Gotell answers on -listen, then exit (used by the container)")
 	flag.Parse()
 
 	if *healthcheck {
 		os.Exit(checkHealth(*listen))
+	}
+	if *workers < 1 || *workers > 256 {
+		log.Fatal("-workers must be from 1 to 256")
 	}
 
 	// Open the database first: if it cannot be written, do not start probing.
@@ -72,7 +77,7 @@ func main() {
 	rp.BaseDelay = 500 * time.Millisecond // short waits for the demo
 	probeCfg := probe.DefaultConfig()
 	probeCfg.AllowPrivate = *allowPrivate
-	pool := worker.NewPoolWithPolicies(probe.New(probeCfg), 4, 16, rp, probe.Default2xx)
+	pool := worker.NewPoolWithPolicies(probe.New(probeCfg), *workers, 4**workers, rp, probe.Default2xx)
 	sched := scheduler.New(pool, time.Second, 2*time.Second, targets)
 	tel := telemetry.New(64)
 	writer := store.NewWriter(db, store.DefaultWriterConfig())
@@ -99,6 +104,7 @@ func main() {
 	apiServer := api.New(db, schedulerControl{sched}, token)
 	apiServer.SetAllowPrivate(*allowPrivate)
 	apiServer.SetLimits(*maxTargets, *maxPerHost)
+	apiServer.SetStats(func() any { return engineStats(pool, sched, tel, writer) })
 	routes.Handle("/api/", apiServer.Handler())
 	routes.Handle("/", web.Handler())
 	// Timeouts and a header size cap, so a slow or broken client cannot
@@ -231,8 +237,9 @@ func heartbeat(ctx context.Context, db *store.SQLite, session int64) {
 	}
 }
 
-// checkHealth asks a running Gotell for /api/heatlh and returns the exit
-// code: 0 if it answered 200 OK, 1 otherwise. The container image has no curl or shell , so gotell checks itself.
+// checkHealth asks a running Gotell for /api/health and returns the exit
+// code: 0 if it answered 200 OK, 1 otherwise. The container image has no
+// curl or shell, so Gotell checks itself.
 func checkHealth(listen string) int {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -253,10 +260,35 @@ func checkHealth(listen string) int {
 
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		fmt.Fprintln(os.Stderr, "healthcheck : status", res.Status)
+		fmt.Fprintln(os.Stderr, "healthcheck: status", res.Status)
 		return 1
 	}
 	return 0
+}
+
+// engineStats is what GET /api/stats reports: Gotell's own load and data
+// loss (blueprint §13), used by the dashboard-free load test.
+func engineStats(pool *worker.Pool, sched *scheduler.Scheduler, tel *telemetry.Telementry, w *store.Writer) any {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	t, ws := tel.Stats(), w.Stats()
+	return map[string]any{
+		"goroutines":            runtime.NumGoroutine(),
+		"heap_alloc_bytes":      mem.HeapAlloc,
+		"sys_bytes":             mem.Sys,
+		"workers":               pool.Stats(),
+		"scheduler_skipped":     sched.Skipped(),
+		"telemetry_depth":       t.Depth,
+		"telemetry_capacity":    t.Capacity,
+		"telemetry_sent":        t.Sent,
+		"telemetry_dropped":     t.Dropped,
+		"telemetry_max_wait_ms": float64(t.MaxWait) / float64(time.Millisecond),
+		"writer_written":        ws.Written,
+		"writer_pending":        ws.Pending,
+		"writer_errors":         ws.WriteErrors,
+		"writer_lost":           ws.Lost,
+		"writer_quarantined":    ws.Quarantined,
+	}
 }
 
 // printRun shows a run's outcome and every attempt, failed ones included.
